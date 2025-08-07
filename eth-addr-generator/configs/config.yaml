@@ -1,0 +1,40 @@
+# 日志等级配置
+logger:
+  level : "info"
+  stdout: true
+
+# 数据库配置
+database:
+  host: "127.0.0.1"
+  port: 3306
+  username: "root"
+  password: "123456"
+  database: "test"
+  max_idle_conns: 10
+  max_open_conns: 500
+  max_lifetime: 30
+
+# 第三方程序执行器配置
+executor:
+  program_path: "profanity.exe"  # 第三方程序路径
+  args: ["--matching", "input.txt",
+    "--output", "output.txt",
+    "--prefix-count", "3", #暂时固定3  目前按前3后4的规则
+    "--suffix-count", "4", #暂时固定4  目前按前3后4的规则
+    "--quit-count", "4"]                # 固定参数列表
+  timeout: 300             # 执行超时时间（秒） 暂定5min
+  working_dir: "."        # 工作目录
+  env:                    # 环境变量
+    PATH: ""
+
+# 应用配置
+app:
+  table_name: "t_order_address_record_result"     # 要查询的表名
+  query_limit: 10             # 查询数据限制
+  max_concurrency: 5           # 最大并发数
+  query_condition: "address = '' or address is NULL"          # 查询条件（可选）
+  enable_batch_mode: false     # 是否启用批量模式
+  loop_interval: 60           # 定时循环间隔（秒）
+  max_tasks: 10               # 最大任务数
+
+

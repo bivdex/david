@@ -1,4 +1,4 @@
-module github.com/DavidCoder99/eth-addr-generator
+module github.com/bivdex/david/eth-addr-generator
 
 go 1.21.13
 

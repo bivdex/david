@@ -18,13 +18,14 @@ type Config struct {
 
 // AppConfig 应用配置
 type AppConfig struct {
-	TableName       string `mapstructure:"table_name"`
-	QueryLimit      int    `mapstructure:"query_limit"`
-	MaxConcurrency  int    `mapstructure:"max_concurrency"`
-	QueryCondition  string `mapstructure:"query_condition"`
-	EnableBatchMode bool   `mapstructure:"enable_batch_mode"`
-	LoopInterval    int    `mapstructure:"loop_interval"` // 新增，单位：秒
-	MaxTasks        int    `mapstructure:"max_tasks"`     // 新增，最大任务数
+	TableName        string `mapstructure:"table_name"`
+	QueryLimit       int    `mapstructure:"query_limit"`
+	MaxConcurrency   int    `mapstructure:"max_concurrency"`
+	QueryCondition   string `mapstructure:"query_condition"`
+	EnableBatchMode  bool   `mapstructure:"enable_batch_mode"`
+	LoopInterval     int    `mapstructure:"loop_interval"` // 新增，单位：秒
+	MaxTasks         int    `mapstructure:"max_tasks"`     // 新增，最大任务数
+	TriggerThreshold int    `mapstructure:"trigger_threshold"`
 }
 
 // LoadConfig 加载配置文件
@@ -77,8 +78,9 @@ func setDefaults() {
 	viper.SetDefault("app.max_concurrency", 5)
 	viper.SetDefault("app.query_condition", "")
 	viper.SetDefault("app.enable_batch_mode", false)
-	viper.SetDefault("app.loop_interval", 60) // 新增，设置默认值
-	viper.SetDefault("app.max_tasks", 1000)   // 新增，设置默认值
+	viper.SetDefault("app.loop_interval", 60)     // 新增，设置默认值
+	viper.SetDefault("app.max_tasks", 1000)       // 新增，设置默认值
+	viper.SetDefault("app.trigger_threshold", 10) // 新增，设置默认值
 }
 
 // validateConfig 验证配置

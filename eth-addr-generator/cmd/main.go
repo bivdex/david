@@ -77,15 +77,6 @@ func writeWithWriteFile(lines []string, filename string) error {
 	return os.WriteFile(filename, []byte(content), 0644)
 }
 
-// DBData 定义存储数据库行数据的结构体，清晰包含所需字段
-type DBData struct {
-	ID              interface{} // id字段（bigint类型）
-	FromAddressPart string      // from_address_part字段
-	AddressMask     string      //补充0x和xxx后的42位字符
-	PrivateKey      string
-	PubAddress      string
-}
-
 // 解析数据并构造参数和map，返回任务数据列表
 func parseData(data []map[string]interface{}) ([]executor.TaskData, error) {
 	var taskDataList []executor.TaskData
@@ -281,10 +272,11 @@ func parseID(val interface{}) int64 {
 
 // Application 应用程序结构体，包含所有依赖
 type Application struct {
-	config     *config.Config
-	dbClient   *database.MySQLClient
-	executor   *executor.Executor
-	lastIDFile string
+	config          *config.Config
+	dbClient        *database.MySQLClient
+	executor        *executor.Executor
+	lastIDFile      string
+	lastProcessTime time.Time
 }
 
 // NewApplication 创建新的应用程序实例
@@ -305,10 +297,11 @@ func NewApplication(configPath string) (*Application, error) {
 	exec := executor.NewExecutor(cfg.Executor)
 
 	return &Application{
-		config:     cfg,
-		dbClient:   dbClient,
-		executor:   exec,
-		lastIDFile: "last_id.txt",
+		config:          cfg,
+		dbClient:        dbClient,
+		executor:        exec,
+		lastIDFile:      "last_id.txt",
+		lastProcessTime: time.Now(),
 	}, nil
 }
 
@@ -335,6 +328,19 @@ func (app *Application) queryData(lastID int64) ([]map[string]interface{}, error
 	}
 	// 查询所有数据
 	return app.dbClient.QueryData(app.config.App.TableName, app.config.App.QueryLimit)
+}
+
+func (app *Application) getNewDataCount(lastID int64) (int, error) {
+	cond := "id > " + fmt.Sprintf("%d", lastID)
+	if app.config.App.QueryCondition != "" {
+		cond = fmt.Sprintf("(%s) AND %s", app.config.App.QueryCondition, cond)
+	}
+
+	// 使用条件查询
+	return app.dbClient.CountDataWithCondition(
+		app.config.App.TableName,
+		cond,
+	)
 }
 
 // processInputData 处理输入数据并写入文件，为每个任务生成独立的input文件
@@ -525,81 +531,193 @@ func (app *Application) printStatistics(data []map[string]interface{}, results [
 	log.Printf("成功率: %.2f%%\n", float64(successCount)/float64(len(data))*100)
 }
 
-// runLoop 循环执行主流程，支持定时和last_id
-func (app *Application) runLoop() error {
-	interval := 60 // 默认60秒
+// 获取循环间隔配置
+func (app *Application) getLoopInterval() int {
 	if app.config.App.LoopInterval > 0 {
-		interval = app.config.App.LoopInterval
+		return app.config.App.LoopInterval
 	}
-	for {
-		lastID, err := LoadLastID(app.lastIDFile)
-		if err != nil {
-			log.Printf("读取last_id失败: %v", err)
-			lastID = 0
-		}
-		log.Printf("本次从id>=%d开始查询", lastID)
-		// 查询数据
-		data, err := app.queryData(lastID)
-		if err != nil {
-			log.Printf("查询数据失败: %v", err)
-			time.Sleep(time.Duration(interval) * time.Second)
-			continue
-		}
-		if len(data) == 0 {
-			log.Println("无新数据，等待下次轮询...")
-			time.Sleep(time.Duration(interval) * time.Second)
-			continue
-		}
-		log.Printf("本次查询到%d条数据", len(data))
+	return 60 // 默认60秒
+}
 
-		// 解析数据为任务列表
-		taskDataList, err := parseData(data)
-		if err != nil {
-			log.Printf("解析数据失败: %v", err)
-			time.Sleep(time.Duration(interval) * time.Second)
-			continue
-		}
+// 计算检查间隔（主间隔的1/10，最小1秒）
+func (app *Application) calculateCheckInterval(interval int) time.Duration {
+	checkInterval := time.Duration(interval) * time.Second / 10
+	if checkInterval < time.Second {
+		return time.Second
+	}
+	return checkInterval
+}
 
-		log.Printf("成功解析出%d个任务", len(taskDataList))
+// 加载上次处理的ID
+func (app *Application) loadLastID() (int64, error) {
+	return LoadLastID(app.lastIDFile)
+}
 
-		// 处理输入数据
-		if err := app.processInputData(taskDataList); err != nil {
-			log.Printf("处理输入数据失败: %v", err)
-			time.Sleep(time.Duration(interval) * time.Second)
-			continue
+// 保存最新处理的ID
+func (app *Application) saveLastID(id int64) error {
+	return SaveLastID(id, app.lastIDFile)
+}
+
+// 更新上次处理时间
+func (app *Application) updateLastProcessTime() {
+	app.lastProcessTime = time.Now()
+}
+
+// 检查是否达到触发条件
+func (app *Application) checkTriggerConditions(lastID int64, interval int) (bool, string) {
+	// 检查时间触发条件
+	timeTriggered, timeReason := app.checkTimeCondition(interval)
+	if timeTriggered {
+		return true, timeReason
+	}
+
+	// 检查数据量触发条件（如果配置了阈值）
+	if app.config.App.TriggerThreshold > 0 {
+		dataTriggered, dataReason := app.checkDataCondition(lastID)
+		if dataTriggered {
+			return true, dataReason
 		}
-		// 执行第三方程序
-		startTime := time.Now()
-		results, err := app.executeCommands(taskDataList)
-		if err != nil {
-			log.Printf("执行命令失败: %v", err)
-			time.Sleep(time.Duration(interval) * time.Second)
-			continue
-		}
-		// 处理执行结果
-		if err := app.processResults(taskDataList); err != nil {
-			log.Printf("处理结果失败: %v", err)
-		}
-		// 清理文件
-		app.cleanupFiles(taskDataList)
-		// 打印统计信息
-		executionTime := time.Since(startTime)
-		app.printStatistics(data, results, executionTime)
-		// 记录本次最大id
-		maxID := lastID
-		for _, row := range data {
-			if idVal, ok := row["id"]; ok {
-				id := parseID(idVal)
-				if id > maxID {
-					maxID = id
-				}
+		return false, dataReason
+	}
+
+	return false, "未达到时间间隔和数据阈值"
+}
+
+// 检查时间触发条件
+func (app *Application) checkTimeCondition(interval int) (bool, string) {
+	elapsed := time.Since(app.lastProcessTime)
+	required := time.Duration(interval) * time.Second
+
+	if elapsed >= required {
+		return true, fmt.Sprintf("时间间隔触发（已过%v，要求%v）", elapsed, required)
+	}
+	return false, fmt.Sprintf("时间未到（已过%v，还需%v）", elapsed, required-elapsed)
+}
+
+// 检查数据量触发条件
+func (app *Application) checkDataCondition(lastID int64) (bool, string) {
+	count, err := app.getNewDataCount(lastID)
+	if err != nil {
+		return false, fmt.Sprintf("数据检查失败: %v", err)
+	}
+
+	if count >= app.config.App.TriggerThreshold {
+		return true, fmt.Sprintf("数据量触发（新增%d条，阈值%d条）", count, app.config.App.TriggerThreshold)
+	}
+	return false, fmt.Sprintf("数据量不足（新增%d条，阈值%d条）", count, app.config.App.TriggerThreshold)
+}
+
+// 处理一个批次的数据
+func (app *Application) processDataBatch(lastID int64) (int64, error) {
+	// 1. 查询数据
+	data, err := app.queryData(lastID)
+	if err != nil {
+		return lastID, fmt.Errorf("查询数据失败: %w", err)
+	}
+
+	if len(data) == 0 {
+		log.Println("没有新数据需要处理")
+		return lastID, nil
+	}
+
+	log.Printf("开始处理批次数据，共%d条记录", len(data))
+	startTime := time.Now()
+
+	// 2. 解析数据为任务列表
+	taskDataList, err := parseData(data)
+	if err != nil {
+		return lastID, fmt.Errorf("解析数据失败: %w", err)
+	}
+
+	if len(taskDataList) == 0 {
+		log.Println("没有有效任务需要执行")
+		return app.getMaxID(data, lastID), nil
+	}
+
+	log.Printf("解析出%d个有效任务", len(taskDataList))
+
+	// 3. 处理输入数据
+	if err := app.processInputData(taskDataList); err != nil {
+		return lastID, fmt.Errorf("处理输入数据失败: %w", err)
+	}
+
+	// 4. 执行第三方程序
+	results, err := app.executeCommands(taskDataList)
+	if err != nil {
+		return lastID, fmt.Errorf("执行命令失败: %w", err)
+	}
+
+	// 5. 处理执行结果
+	if err := app.processResults(taskDataList); err != nil {
+		log.Printf("处理结果时警告: %v", err) // 非致命错误，继续执行
+	}
+
+	// 6. 清理临时文件
+	app.cleanupFiles(taskDataList)
+
+	// 7. 打印统计信息
+	executionTime := time.Since(startTime)
+	app.printStatistics(data, results, executionTime)
+
+	// 8. 返回本次处理的最大ID
+	return app.getMaxID(data, lastID), nil
+}
+
+// 获取数据中的最大ID
+func (app *Application) getMaxID(data []map[string]interface{}, currentMax int64) int64 {
+	maxID := currentMax
+	for _, row := range data {
+		if idVal, ok := row["id"]; ok {
+			id := parseID(idVal)
+			if id > maxID {
+				maxID = id
 			}
 		}
-		if err := SaveLastID(maxID, app.lastIDFile); err != nil {
-			log.Printf("保存last_id失败: %v", err)
+	}
+	return maxID
+}
+
+// runLoop 循环执行主流程，支持定时和last_id
+func (app *Application) runLoop() error {
+	// 初始化配置参数
+	interval := app.getLoopInterval()
+	checkInterval := app.calculateCheckInterval(interval)
+
+	log.Printf("启动监控循环 - 定时间隔: %ds, 检查间隔: %v, 触发阈值: %d条",
+		interval, checkInterval, app.config.App.TriggerThreshold)
+
+	for {
+		// 1. 加载上次处理的ID
+		lastID, err := app.loadLastID()
+		if err != nil {
+			log.Printf("警告: 读取last_id失败: %v，将从0开始", err)
+			lastID = 0
 		}
-		log.Printf("本次处理结束，最大id=%d，等待%d秒...", maxID, interval)
-		time.Sleep(time.Duration(interval) * time.Second)
+
+		// 2. 检查是否达到触发条件
+		triggered, reason := app.checkTriggerConditions(lastID, interval)
+		if !triggered {
+			log.Printf("未触发处理 - %s，%v后再次检查", reason, checkInterval)
+			//app.updateLastProcessTime() //需要刷新lastProcessTime
+			time.Sleep(checkInterval)
+			continue
+		}
+
+		log.Printf("触发处理流程 - %s", reason)
+		app.updateLastProcessTime()
+		// 3. 执行数据处理流程
+		maxID, err := app.processDataBatch(lastID)
+		if err != nil {
+			log.Printf("处理批次失败: %v", err)
+		} else if maxID > lastID {
+			// 4. 仅当有新数据处理时才更新状态
+			if err := app.saveLastID(maxID); err != nil {
+				log.Printf("保存last_id失败: %v", err)
+			}
+			log.Printf("批次处理完成，最新ID: %d，等待下次触发", maxID)
+		}
+
+		time.Sleep(checkInterval)
 	}
 }
 

@@ -244,3 +244,30 @@ func (c *MySQLClient) UpdateByID(tableName, idColumn string, id interface{}, par
 
 	return rowsAffected, nil
 }
+
+// CountDataWithCondition 根据条件查询记录数
+// condition 为WHERE条件，如 "status = 1 AND type = 'user'"
+// 如果不需要条件，可传入空字符串""，表示查询表中所有记录数
+func (c *MySQLClient) CountDataWithCondition(tableName, condition string) (int, error) {
+	if tableName == "" {
+		return 0, fmt.Errorf("table name cannot be empty")
+	}
+
+	// 构建查询SQL
+	var query string
+	if condition == "" {
+		query = fmt.Sprintf("SELECT COUNT(id) FROM %s", tableName)
+	} else {
+		query = fmt.Sprintf("SELECT COUNT(id) FROM %s WHERE %s", tableName, condition)
+	}
+
+	// 执行查询
+	var count int
+	err := c.db.QueryRow(query).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("failed to count rows in table %s: %w", tableName, err)
+	}
+
+	log.Printf("Found %d rows in table %s with condition: %s", count, tableName, condition)
+	return count, nil
+}

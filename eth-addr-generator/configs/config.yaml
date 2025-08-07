@@ -38,5 +38,6 @@ app:
   enable_batch_mode: false     # 是否启用批量模式
   loop_interval: 60           # 定时循环间隔（秒）
   max_tasks: 10               # 最大任务数
+  trigger_threshold: 0        # 任务阈值（新增多少条需要处理的数据条数需要触发取一次任务）
 
 

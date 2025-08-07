@@ -72,10 +72,31 @@ func (e *Executor) Execute(params map[string]interface{}) (*ExecutionResult, err
 		}
 	}
 
+	// 动态替换 --prefix-count 和 --suffix-count 参数
+	if prefixCount, hasPrefixCount := params["prefix_count"]; hasPrefixCount {
+		// 查找并替换 --prefix-count 参数
+		for i := 0; i < len(args)-1; i++ {
+			if args[i] == "--prefix-count" {
+				args[i+1] = fmt.Sprintf("%v", prefixCount)
+				break
+			}
+		}
+	}
+
+	if suffixCount, hasSuffixCount := params["suffix_count"]; hasSuffixCount {
+		// 查找并替换 --suffix-count 参数
+		for i := 0; i < len(args)-1; i++ {
+			if args[i] == "--suffix-count" {
+				args[i+1] = fmt.Sprintf("%v", suffixCount)
+				break
+			}
+		}
+	}
+
 	// 将其他参数添加到命令中
 	for key, value := range params {
 		// 跳过已经处理的 input_file 和 output_file
-		if key == "input_file" || key == "output_file" {
+		if key == "input_file" || key == "output_file" || key == "prefix_count" || key == "suffix_count" {
 			continue
 		}
 
@@ -256,8 +277,8 @@ type TaskData struct {
 	ID              interface{} // 数据库id字段
 	FromAddressPart string      // from_address_part字段
 	AddressMask     string      // 补充0x和xxx后的42位字符
-	PrivateKey      string
-	PubAddress      string
+	PrefixCount     int
+	SuffixCount     int
 }
 
 // ExecuteBatchWithTaskData 批量执行，支持TaskData结构体和最大任务数限制
@@ -286,8 +307,10 @@ func (e *Executor) ExecuteBatchWithTaskData(taskDataList []TaskData, maxConcurre
 
 				// 为每个任务传递对应的文件名参数
 				params := map[string]interface{}{
-					"input_file":  fmt.Sprintf("input-%d.txt", taskData.TaskID),
-					"output_file": fmt.Sprintf("output-%d.txt", taskData.TaskID),
+					"input_file":   fmt.Sprintf("input-%d.txt", taskData.TaskID),
+					"output_file":  fmt.Sprintf("output-%d.txt", taskData.TaskID),
+					"prefix_count": taskData.PrefixCount,
+					"suffix_count": taskData.SuffixCount,
 				}
 
 				result, err := e.Execute(params)

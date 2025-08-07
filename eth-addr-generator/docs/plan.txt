@@ -9,3 +9,53 @@
 
 0806：
 测试和优化 争取提交一版
+
+# processString函数优化说明
+
+## 优化目标
+将 `processString` 函数从只支持前3位后4位的固定模式，优化为支持任意前N位后M位的动态模式。
+
+## 主要修改
+
+### 1. 配置文件修改
+- 在 `configs/config.yaml` 中添加了 `prefix_count` 和 `suffix_count` 配置项
+- 在 `pkg/config/config.go` 中的 `AppConfig` 结构体添加了对应字段
+- 设置了默认值：`prefix_count: 3`, `suffix_count: 4`
+
+### 2. 核心函数优化
+
+#### processString函数
+- 修改函数签名：`processString(s string, prefixCount, suffixCount int) (string, bool)`
+- 添加 `generatePattern` 辅助函数，动态生成正则表达式
+- 支持任意前N位后M位的模式匹配
+
+#### GenerateMatcher函数
+- 修改函数签名：`GenerateMatcher(publicKey string, prefixCount, suffixCount int) (string, error)`
+- 支持动态的前N位后M位匹配串生成
+
+### 3. 相关函数更新
+- `parseData` 函数：添加 `prefixCount` 和 `suffixCount` 参数
+- `executeCommands` 函数：动态传递 `prefix_count` 和 `suffix_count` 参数给第三方程序
+- `ExecuteBatchWithTaskData` 方法：支持批量执行时的动态参数传递
+
+## 使用示例
+
+### 配置文件示例
+```yaml
+app:
+  prefix_count: 3  # 前3位
+  suffix_count: 4  # 后4位
+```
+
+### 支持的格式示例
+- 前3后4模式：`abc...defg` → `0xabcxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxdefg`
+- 前2后3模式：`ab...def` → `0xabxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxdef`
+- 前5后6模式：`abcde...123456` → `0xabcdexxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx123456`
+
+## 向后兼容性
+- 默认配置保持前3后4模式，确保向后兼容
+- 现有代码无需修改即可继续使用
+- 通过配置文件可以灵活调整前N位后M位的值
+
+## 测试验证
+创建了 `test_program.go` 测试程序，验证不同模式下的功能正确性。

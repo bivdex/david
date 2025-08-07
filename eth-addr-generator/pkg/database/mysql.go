@@ -214,16 +214,12 @@ func (c *MySQLClient) UpdateByID(tableName, idColumn string, id interface{}, par
 
 	// 构建参数列表，将ID添加到参数末尾
 	args := make([]interface{}, 0, len(params)+1)
-	for _, val := range params {
-		args = append(args, val)
-	}
-	args = append(args, id)
-
-	// 构建更新字段部分
 	var setClauses []string
-	for col := range params {
+	for col, val := range params {
+		args = append(args, val)
 		setClauses = append(setClauses, fmt.Sprintf("%s = ?", col))
 	}
+	args = append(args, id)
 
 	// 构建完整SQL
 	query := fmt.Sprintf("UPDATE %s SET %s WHERE %s",

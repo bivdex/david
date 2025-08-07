@@ -16,22 +16,54 @@ import (
 	"github.com/bivdex/david/eth-addr-generator/pkg/verify"
 )
 
-// 正则表达式：前3位是字母或数字，中间3位是...，后4位是字母或数字
-var pattern = regexp.MustCompile(`^[a-fA-F0-9]{3}\.\.\.[a-fA-F0-9]{4}$`)
+// 生成动态正则表达式：前N位是字母或数字，中间是...，后M位是字母或数字
+func generatePattern(prefixCount, suffixCount int) *regexp.Regexp {
+	patternStr := fmt.Sprintf(`^[a-fA-F0-9]{%d}\.\.\.[a-fA-F0-9]{%d}$`, prefixCount, suffixCount)
+	return regexp.MustCompile(patternStr)
+}
 
-// processString 校验字符串格式，替换中间的...为33位x，并添加0x前缀
-func processString(s string) (string, bool) {
+// getPrefixAndSuffixLengths 解析包含三个点的字符串，返回前缀和后缀的长度
+// 参数:
+//
+//	s - 包含三个点(...)的字符串
+//
+// 返回:
+//
+//	prefixLen - 三个点前面的字符长度
+//	suffixLen - 三个点后面的字符长度
+//	err - 如果字符串格式不符合要求则返回错误
+func getPrefixAndSuffixLengths(s string) (prefixLen, suffixLen int, err error) {
+	// 使用正则表达式捕获三个点前后的内容
+	re := regexp.MustCompile(`^([a-zA-Z0-9]*)\.{3}([a-zA-Z0-9]*)$`)
+	matches := re.FindStringSubmatch(s)
+
+	// 检查匹配结果
+	if len(matches) != 3 {
+		return 0, 0, fmt.Errorf("字符串格式不符合要求，必须包含三个连续的点(...)")
+	}
+
+	// 返回前后缀的长度
+	return len(matches[1]), len(matches[2]), nil
+}
+
+// processString 校验字符串格式，替换中间的...为x，并添加0x前缀
+// 支持动态的前N位后M位模式
+func processString(s string, prefixCount, suffixCount int) (string, bool) {
+
+	// 生成动态正则表达式
+	pattern := generatePattern(prefixCount, suffixCount)
+
 	// 校验格式是否符合要求
 	if !pattern.MatchString(s) {
 		return s, false
 	}
 
-	// 提取前3位和后4位
-	prefix := s[:3]
-	suffix := s[len(s)-4:]
+	// 提取前N位和后M位
+	prefix := s[:prefixCount]
+	suffix := s[len(s)-suffixCount:]
 
-	// 生成33位x的中间部分
-	middle := strings.Repeat("x", 33)
+	// 生成x的中间部分
+	middle := strings.Repeat("x", 40-prefixCount-suffixCount)
 
 	// 拼接结果并添加0x前缀
 	result := "0x" + prefix + middle + suffix
@@ -74,7 +106,13 @@ func parseData(data []map[string]interface{}) ([]executor.TaskData, error) {
 
 		// 处理from_address_part生成第三方程序参数
 		fromAddrPart := convertToString(fromAddrVal)
-		processRet, isValid := processString(convertToString(fromAddrVal))
+		// 根据s中的...前后的字符串个数获取prefixCount suffixCount
+		prefixCount, suffixCount, err := getPrefixAndSuffixLengths(fromAddrPart)
+		if err != nil {
+			log.Printf("第%d行数据from_address_part %s格式有错误，跳过该行", i, fromAddrPart)
+			continue
+		}
+		processRet, isValid := processString(fromAddrPart, prefixCount, suffixCount)
 		if isValid {
 			// 创建任务数据
 			taskData := executor.TaskData{
@@ -82,8 +120,8 @@ func parseData(data []map[string]interface{}) ([]executor.TaskData, error) {
 				ID:              id,
 				FromAddressPart: fromAddrPart,
 				AddressMask:     processRet,
-				PrivateKey:      "",
-				PubAddress:      "",
+				PrefixCount:     prefixCount,
+				SuffixCount:     suffixCount,
 			}
 			taskDataList = append(taskDataList, taskData)
 		} else {
@@ -168,26 +206,26 @@ func ReadMultiColumnFile(filename string, minCols int, trimSpace bool) ([]RowDat
 	return rows, nil
 }
 
-// GenerateMatcher 根据公钥生成前 3 后 4 的匹配串（格式：前 3 位... 后 4 位）
+// GenerateMatcher 根据公钥生成前 N 后 M 的匹配串（格式：前 N 位... 后 M 位）
 // 处理逻辑：
 // 1. 移除公钥可能包含的 "0x" 前缀
-// 2. 提取处理后字符串的前 3 位和后 4 位
-// 3. 拼接为 "前 3 位... 后 4 位" 格式
-func GenerateMatcher(publicKey string) (string, error) {
+// 2. 提取处理后字符串的前 N 位和后 M 位
+// 3. 拼接为 "前 N 位... 后 M 位" 格式
+func GenerateMatcher(publicKey string, prefixCount, suffixCount int) (string, error) {
 	// 步骤 1：去除可能的 0x 前缀（不区分大小写）
 	processedKey := strings.TrimPrefix(strings.ToLower(publicKey), "0x")
 
 	// 验证处理后的公钥长度是否足够
-	minLength := 7 // 前 3 位 + 后 4 位 = 至少 7 位
+	minLength := prefixCount + suffixCount // 前 N 位 + 后 M 位 = 至少 N+M 位
 	if len(processedKey) < minLength {
 		return "", errors.New(fmt.Sprintf(" 公钥长度不足，处理后长度为 % d，至少需要 % d 位 ", len(processedKey), minLength))
 	}
 
-	// 步骤 2：提取前 3 位和后 4 位
-	prefix := processedKey[:3]
-	suffix := processedKey[len(processedKey)-4:]
+	// 步骤 2：提取前 N 位和后 M 位
+	prefix := processedKey[:prefixCount]
+	suffix := processedKey[len(processedKey)-suffixCount:]
 
-	// 步骤 3：拼接成 "前 3... 后 4" 格式
+	// 步骤 3：拼接成 "前 N... 后 M" 格式
 	return fmt.Sprintf("% s...% s", prefix, suffix), nil
 }
 
@@ -320,7 +358,9 @@ func (app *Application) executeCommands(taskDataList []executor.TaskData) ([]*ex
 	if app.config.App.EnableBatchMode {
 		// 批量并发执行，传递最大任务数
 		log.Printf("Starting batch execution with %d concurrent workers, max tasks: %d", app.config.App.MaxConcurrency, app.config.App.MaxTasks)
-		return app.executor.ExecuteBatchWithTaskData(taskDataList, app.config.App.MaxConcurrency, app.config.App.MaxTasks)
+		return app.executor.ExecuteBatchWithTaskData(taskDataList,
+			app.config.App.MaxConcurrency,
+			app.config.App.MaxTasks)
 	}
 
 	// 顺序执行，受max_tasks限制
@@ -342,8 +382,10 @@ func (app *Application) executeCommands(taskDataList []executor.TaskData) ([]*ex
 
 			// 为每个任务传递对应的文件名参数
 			params := map[string]interface{}{
-				"input_file":  fmt.Sprintf("input-%d.txt", td.TaskID),
-				"output_file": fmt.Sprintf("output-%d.txt", td.TaskID),
+				"input_file":   fmt.Sprintf("input-%d.txt", td.TaskID),
+				"output_file":  fmt.Sprintf("output-%d.txt", td.TaskID),
+				"prefix_count": td.PrefixCount,
+				"suffix_count": td.SuffixCount,
 			}
 
 			result, err := app.executor.Execute(params)
@@ -391,8 +433,8 @@ func (app *Application) processResults(taskDataList []executor.TaskData) error {
 			privateKey := row.Columns[0]
 			publicKey := row.Columns[1]
 
-			// 根据publicKey获取前3后4的匹配串
-			fromPart, _ := GenerateMatcher(publicKey)
+			// 根据publicKey获取前N后M的匹配串
+			fromPart, _ := GenerateMatcher(publicKey, taskData.PrefixCount, taskData.SuffixCount)
 			if verify.IsValidPrivateKey(privateKey) && !historyDBUpdate[fromPart] {
 				if err := app.updateDatabase(fromPart, privateKey, publicKey, taskData); err != nil {
 					log.Printf("[任务%d] db回写处理失败: %s,%s,err:%v", taskData.TaskID, taskData.ID, fromPart, err)

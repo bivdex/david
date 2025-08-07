@@ -18,7 +18,7 @@ import (
 
 // 生成动态正则表达式：前N位是字母或数字，中间是...，后M位是字母或数字
 func generatePattern(prefixCount, suffixCount int) *regexp.Regexp {
-	patternStr := fmt.Sprintf(`^[a-fA-F0-9]{%d}\.\.\.[a-fA-F0-9]{%d}$`, prefixCount, suffixCount)
+	patternStr := fmt.Sprintf(`^0x[a-fA-F0-9]{%d}\.\.\.[a-fA-F0-9]{%d}$`, prefixCount, suffixCount)
 	return regexp.MustCompile(patternStr)
 }
 
@@ -34,7 +34,7 @@ func generatePattern(prefixCount, suffixCount int) *regexp.Regexp {
 //	err - 如果字符串格式不符合要求则返回错误
 func getPrefixAndSuffixLengths(s string) (prefixLen, suffixLen int, err error) {
 	// 使用正则表达式捕获三个点前后的内容
-	re := regexp.MustCompile(`^([a-zA-Z0-9]*)\.{3}([a-zA-Z0-9]*)$`)
+	re := regexp.MustCompile(`^0x([a-zA-Z0-9]*)\.{3}([a-zA-Z0-9]*)$`)
 	matches := re.FindStringSubmatch(s)
 
 	// 检查匹配结果
@@ -59,14 +59,14 @@ func processString(s string, prefixCount, suffixCount int) (string, bool) {
 	}
 
 	// 提取前N位和后M位
-	prefix := s[:prefixCount]
+	prefix := s[:prefixCount+2]
 	suffix := s[len(s)-suffixCount:]
 
 	// 生成x的中间部分
 	middle := strings.Repeat("x", 40-prefixCount-suffixCount)
 
-	// 拼接结果并添加0x前缀
-	result := "0x" + prefix + middle + suffix
+	// 拼接结果
+	result := prefix + middle + suffix
 	return result, true
 }
 
@@ -441,8 +441,8 @@ func (app *Application) processResults(taskDataList []executor.TaskData) error {
 
 			// 根据publicKey获取前N后M的匹配串
 			fromPart, _ := GenerateMatcher(publicKey, taskData.PrefixCount, taskData.SuffixCount)
-			if verify.IsValidPrivateKey(privateKey) && !historyDBUpdate[fromPart] {
-				if err := app.updateDatabase(fromPart, privateKey, publicKey, taskData); err != nil {
+			if verify.IsValidPrivateKey(privateKey, publicKey) && !historyDBUpdate[fromPart] {
+				if err := app.updateDatabase(privateKey, publicKey, taskData); err != nil {
 					log.Printf("[任务%d] db回写处理失败: %s,%s,err:%v", taskData.TaskID, taskData.ID, fromPart, err)
 				} else {
 					historyDBUpdate[fromPart] = true
@@ -455,7 +455,7 @@ func (app *Application) processResults(taskDataList []executor.TaskData) error {
 }
 
 // updateDatabase 更新数据库记录
-func (app *Application) updateDatabase(fromPart, privateKey, publicKey string, taskData executor.TaskData) error {
+func (app *Application) updateDatabase(privateKey, publicKey string, taskData executor.TaskData) error {
 	// 要更新的字段和值
 	updateParams := map[string]interface{}{
 		"address":            publicKey,

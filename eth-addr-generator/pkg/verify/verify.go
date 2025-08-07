@@ -3,11 +3,30 @@ package verify
 import (
 	"bytes"
 	"fmt"
+	"github.com/ethereum/go-ethereum/crypto"
 	"log"
 	"os/exec"
+	"strings"
 )
 
-func IsValidPrivateKey(targetKey string) bool {
+func IsValidPrivateKey(targetKey, targetPubKey string) bool {
+	// 2. 解析私钥（去掉0x前缀）
+	privateKey, err := crypto.HexToECDSA(targetKey[2:])
+	if err != nil {
+		log.Fatalf("解析私钥失败: %v", err)
+		return false
+	}
+
+	// 3. 获取公钥
+	publicKey := privateKey.PublicKey
+	// 4. 获取地址
+	address := crypto.PubkeyToAddress(publicKey)
+	addressHex := strings.ToLower(address.Hex())
+
+	return targetPubKey == addressHex
+}
+
+func IsValidPrivateKeyByNodeJs(targetKey string) bool {
 	// 定义要传递给Node.js脚本的参数
 	privateKey := targetKey //"0x17ef2d2cea89448d9bfcd90a29cfe0ad7c9f5dfae6dfc2b0d56d2c6a88745c8d"
 

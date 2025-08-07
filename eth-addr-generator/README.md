@@ -32,27 +32,20 @@ eth-addr-generator/
 ```
 
 ## 安装和运行
-### 1. 安装nodejs
 
-### 2. 安装ethers库
-
-```bash
-npm install ethers
-```
-
-### 3. 安装依赖
+### 1. 安装依赖
 
 ```bash
 go mod tidy
 ```
 
-### 4. 编译程序
+### 2. 编译程序
 
 ```bash
 go build -o eth-acc-gen.exe cmd/main.go
 ```
 
-### 5. 配置数据库
+### 3. 配置数据库
 
 编辑 `configs/config.yaml` 文件，设置数据库连接信息：
 
@@ -65,7 +58,7 @@ database:
   database: "tron"
 ```
 
-### 6. 配置应用参数
+### 4. 配置应用参数
 
 ```yaml
 app:
@@ -80,7 +73,7 @@ executor:
   timeout: 30                  # 执行超时时间（秒）
 ```
 
-### 7. 运行程序
+### 5. 运行程序
 
 ```bash
 go run cmd/main.go

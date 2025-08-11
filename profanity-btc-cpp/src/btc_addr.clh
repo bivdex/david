@@ -1,0 +1,323 @@
+/* =========================
+   btc_addr.clh  (OpenCL header)
+   ========================= */
+
+#ifndef BTC_ADDR_CLH
+#define BTC_ADDR_CLH
+
+/* -------- Config -------- */
+#ifndef BTC_BECH32_HRP
+#define BTC_BECH32_HRP "bc"   /* change to "tb" for testnet */
+#endif
+
+/* ======== Common helpers ======== */
+inline uint ROTR32(uint x, uint n){ return (x>>n)|(x<<(32-n)); }
+inline uint ROTL32(uint x, uint n){ return (x<<n)|(x>>(32-n)); }
+
+/* big-endian / little-endian helpers (private buffer only) */
+inline uint load_be32(const __private uchar *p){
+    return ((uint)p[0]<<24)|((uint)p[1]<<16)|((uint)p[2]<<8)|(uint)p[3];
+}
+inline void store_be32(__private uchar *p, uint x){
+    p[0]=(uchar)(x>>24); p[1]=(uchar)(x>>16); p[2]=(uchar)(x>>8); p[3]=(uchar)x;
+}
+inline uint load_le32(const __private uchar *p){
+    return ((uint)p[3]<<24)|((uint)p[2]<<16)|((uint)p[1]<<8)|(uint)p[0];
+}
+inline void store_le32(__private uchar *p, uint x){
+    p[0]=(uchar)x; p[1]=(uchar)(x>>8); p[2]=(uchar)(x>>16); p[3]=(uchar)(x>>24);
+}
+
+/* ======== SHA-256 ======== */
+__constant uint SHA256_K[64]={
+  0x428a2f98u,0x71374491u,0xb5c0fbcfu,0xe9b5dba5u,0x3956c25bu,0x59f111f1u,0x923f82a4u,0xab1c5ed5u,
+  0xd807aa98u,0x12835b01u,0x243185beu,0x550c7dc3u,0x72be5d74u,0x80deb1feu,0x9bdc06a7u,0xc19bf174u,
+  0xe49b69c1u,0xefbe4786u,0x0fc19dc6u,0x240ca1ccu,0x2de92c6fu,0x4a7484aau,0x5cb0a9dcu,0x76f988dau,
+  0x983e5152u,0xa831c66du,0xb00327c8u,0xbf597fc7u,0xc6e00bf3u,0xd5a79147u,0x06ca6351u,0x14292967u,
+  0x27b70a85u,0x2e1b2138u,0x4d2c6dfcu,0x53380d13u,0x650a7354u,0x766a0abbu,0x81c2c92eu,0x92722c85u,
+  0xa2bfe8a1u,0xa81a664bu,0xc24b8b70u,0xc76c51a3u,0xd192e819u,0xd6990624u,0xf40e3585u,0x106aa070u,
+  0x19a4c116u,0x1e376c08u,0x2748774cu,0x34b0bcb5u,0x391c0cb3u,0x4ed8aa4au,0x5b9cca4fu,0x682e6ff3u,
+  0x748f82eeu,0x78a5636fu,0x84c87814u,0x8cc70208u,0x90befffau,0xa4506cebu,0xbef9a3f7u,0xc67178f2u
+};
+
+inline void sha256_compress(uint S[8], const __private uchar blk[64]){
+    uint w[64];
+    #pragma unroll
+    for(int i=0;i<16;i++) w[i]=load_be32(&blk[4*i]);
+    #pragma unroll
+    for(int i=16;i<64;i++){
+        uint s0=ROTR32(w[i-15],7)^ROTR32(w[i-15],18)^(w[i-15]>>3);
+        uint s1=ROTR32(w[i-2],17)^ROTR32(w[i-2],19)^(w[i-2]>>10);
+        w[i]=w[i-16]+s0+w[i-7]+s1;
+    }
+    uint a=S[0],b=S[1],c=S[2],d=S[3],e=S[4],f=S[5],g=S[6],h=S[7];
+    #pragma unroll
+    for(int i=0;i<64;i++){
+        uint S1=ROTR32(e,6)^ROTR32(e,11)^ROTR32(e,25);
+        uint ch=(e&f)^((~e)&g);
+        uint t1=h+S1+ch+SHA256_K[i]+w[i];
+        uint S0=ROTR32(a,2)^ROTR32(a,13)^ROTR32(a,22);
+        uint maj=(a&b)^(a&c)^(b&c);
+        uint t2=S0+maj;
+        h=g; g=f; f=e; e=d+t1; d=c; c=b; b=a; a=t1+t2;
+    }
+    S[0]+=a; S[1]+=b; S[2]+=c; S[3]+=d; S[4]+=e; S[5]+=f; S[6]+=g; S[7]+=h;
+}
+
+/* msg[0..len-1] -> out[32] */
+inline void sha256(const __global uchar *msg, uint len, __global uchar *out){
+    uint H[8]={0x6a09e667u,0xbb67ae85u,0x3c6ef372u,0xa54ff53au,0x510e527fu,0x9b05688cu,0x1f83d9abu,0x5be0cd19u};
+    uint full=len/64;
+    __private uchar blk[64];
+    for(uint i=0;i<full;i++){
+        for(int j=0;j<64;j++) blk[j]=msg[i*64+j];
+        sha256_compress(H,blk);
+    }
+    uint rem=len%64;
+    for(uint j=0;j<rem;j++) blk[j]=msg[full*64+j];
+    blk[rem++]=0x80;
+    if(rem>56){ for(uint j=rem;j<64;j++) blk[j]=0; sha256_compress(H,blk); rem=0; }
+    for(uint j=rem;j<56;j++) blk[j]=0;
+    ulong bitlen=(ulong)len*8ul;
+    for(int k=0;k<8;k++) blk[56+7-k]=(uchar)(bitlen>>(8*k));
+    sha256_compress(H,blk);
+    for(int i=0;i<8;i++) store_be32(&blk[4*i],H[i]);
+    for(int i=0;i<32;i++) out[i]=blk[i];
+}
+
+/* ======== RIPEMD-160 ======== */
+inline uint F_r(uint j,uint x,uint y,uint z){
+    if(j<=15) return x^y^z;
+    if(j<=31) return (x&y)|(~x&z);
+    if(j<=47) return (x|~y)^z;
+    if(j<=63) return (x&z)|(y&~z);
+    return x^(y|~z);
+}
+__constant uint RL[80]={ 0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15, 7,4,13,1,10,6,15,3,12,0,9,5,2,14,11,8, 3,10,14,4,9,15,8,1,2,7,0,6,13,11,5,12, 1,9,11,10,0,8,12,4,13,3,7,15,14,5,6,2, 4,0,5,9,7,12,2,10,14,1,3,8,11,6,15,13 };
+__constant uint RR[80]={ 5,14,7,0,9,2,11,4,13,6,15,8,1,10,3,12, 6,11,3,7,0,13,5,10,14,15,8,12,4,9,1,2, 15,5,1,3,7,14,6,9,11,8,12,2,10,0,4,13, 8,6,4,1,3,11,15,0,5,12,2,13,9,7,10,14, 12,15,10,4,1,5,8,7,6,2,13,14,0,3,9,11 };
+__constant uint SL[80]={ 11,14,15,12,5,8,7,9,11,13,14,15,6,7,9,8, 7,6,8,13,11,9,7,15,7,12,15,9,11,7,13,12, 11,13,6,7,14,9,13,15,14,8,13,6,5,12,7,5, 11,12,14,15,14,15,9,8,9,14,5,6,8,6,5,12, 9,15,5,11,6,8,13,12,5,12,13,14,11,8,5,6 };
+__constant uint SR[80]={ 8,9,9,11,13,15,15,5,7,7,8,11,14,14,12,6, 9,13,15,7,12,8,9,11,7,7,12,7,6,15,13,11, 9,7,15,11,8,6,6,14,12,13,5,14,13,13,7,5, 15,5,8,11,14,14,6,14,6,9,12,9,12,5,15,8, 8,5,12,9,12,5,14,6,8,13,6,5,15,13,11,11 };
+__constant uint KLc[5]={0x00000000u,0x5a827999u,0x6ed9eba1u,0x8f1bbcdcu,0xa953fd4eu};
+__constant uint KRc[5]={0x50a28be6u,0x5c4dd124u,0x6d703ef3u,0x7a6d76e9u,0x00000000u};
+
+inline void ripemd160_compress(uint H[5], const __private uchar blk[64]){
+    uint X[16]; #pragma unroll
+    for(int i=0;i<16;i++) X[i]=load_le32(&blk[4*i]);
+
+    uint al=H[0],bl=H[1],cl=H[2],dl=H[3],el=H[4];
+    uint ar=al,br=bl,cr=cl,dr=dl,er=el;
+
+    for(int j=0;j<80;j++){
+        uint t = ROTL32(al + F_r(j,bl,cl,dl) + X[RL[j]] + KLc[j/16], SL[j]) + el;
+        al=el; el=dl; dl=ROTL32(cl,10); cl=bl; bl=t;
+
+        t = ROTL32(ar + F_r(79-j,br,cr,dr) + X[RR[j]] + KRc[j/16], SR[j]) + er;
+        ar=er; er=dr; dr=ROTL32(cr,10); cr=br; br=t;
+    }
+    uint t0 = H[1] + cl + dr;
+    H[1] = H[2] + dl + er;
+    H[2] = H[3] + el + ar;
+    H[3] = H[4] + al + br;
+    H[4] = H[0] + bl + cr;
+    H[0] = t0;
+}
+
+/* msg[0..len-1] -> out[20] */
+inline void ripemd160(const __global uchar *msg, uint len, __global uchar *out){
+    uint H[5]={0x67452301u,0xefcdab89u,0x98badcfeu,0x10325476u,0xc3d2e1f0u};
+    uint full=len/64;
+    __private uchar blk[64];
+    for(uint i=0;i<full;i++){
+        for(int j=0;j<64;j++) blk[j]=msg[i*64+j];
+        ripemd160_compress(H,blk);
+    }
+    uint rem=len%64;
+    for(uint j=0;j<rem;j++) blk[j]=msg[full*64+j];
+    blk[rem++]=0x80;
+    if(rem>56){ for(uint j=rem;j<64;j++) blk[j]=0; ripemd160_compress(H,blk); rem=0; }
+    for(uint j=rem;j<56;j++) blk[j]=0;
+    ulong bitlen=(ulong)len*8ul;
+    for(int k=0;k<8;k++) blk[56+k]=(uchar)(bitlen>>(8*k)); /* little-endian length */
+    ripemd160_compress(H,blk);
+    for(int i=0;i<5;i++) store_le32(&blk[4*i],H[i]);
+    for(int i=0;i<20;i++) out[i]=blk[i];
+}
+
+/* ======== HASH160 helpers ======== */
+inline void hash160_pubkey(const __global uchar *pubkey, uint pubkey_len, __global uchar *out20){
+    __private uchar tmp32[32];
+    sha256(pubkey,pubkey_len,(__global uchar*)tmp32);
+    ripemd160((__global const uchar*)tmp32,32,out20);
+}
+inline void hash160_script(const __global uchar *script, uint script_len, __global uchar *out20){
+    __private uchar tmp32[32];
+    sha256(script,script_len,(__global uchar*)tmp32);
+    ripemd160((__global const uchar*)tmp32,32,out20);
+}
+
+/* ======== Bech32 (BIP-173) ======== */
+__constant char BECH32_CHARSET[33]="qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+
+inline uint bech32_polymod(const __private uchar *v,int n){
+    uint chk=1;
+    __constant uint GEN[5]={0x3b6a57b2u,0x26508e6du,0x1ea119fau,0x3d4233ddu,0x2a1462b3u};
+    for(int i=0;i<n;i++){
+        uint top=chk>>25;
+        chk=((chk&0x1ffffffu)<<5)^(uint)v[i];
+        for(int j=0;j<5;j++) chk^=((top>>j)&1u)?GEN[j]:0u;
+    }
+    return chk;
+}
+inline int bech32_hrp_expand(const char* hrp,__private uchar*out){
+    int L=0; while(hrp[L]!=0) L++;
+    int n=0; for(int i=0;i<L;i++) out[n++]=(uchar)(hrp[i]>>5);
+    out[n++]=0;
+    for(int i=0;i<L;i++) out[n++]=(uchar)(hrp[i]&31);
+    return n;
+}
+inline void bech32_create_checksum(const char*hrp,const __private uchar*data,int dlen,__private uchar*chk){
+    uchar vals[200]; int n=bech32_hrp_expand(hrp,vals);
+    for(int i=0;i<dlen;i++) vals[n++]=data[i];
+    for(int i=0;i<6;i++) vals[n++]=0;
+    uint pm=bech32_polymod(vals,n)^1u;
+    for(int i=0;i<6;i++) chk[i]=(uchar)((pm>>(5*(5-i)))&31u);
+}
+inline int convert_bits_8_to_5(const __private uchar*in,int inlen,__private uchar*out){
+    uint acc=0; int bits=0; int outlen=0;
+    for(int i=0;i<inlen;i++){
+        acc=(acc<<8)|in[i]; bits+=8;
+        while(bits>=5){ out[outlen++]=(uchar)((acc>>(bits-5))&31u); bits-=5; }
+    }
+    if(bits>0) out[outlen++]=(uchar)((acc<<(5-bits))&31u);
+    return outlen;
+}
+/* Bech32 encode SegWit address; out: ascii string (with '\0') */
+inline int bech32_encode_segwit(__global char*out,const char*hrp,int witver,const __global uchar*prog,int prog_len){
+    if(witver<0||witver>16) return -1;
+    if(prog_len<2||prog_len>40) return -1;
+    __private uchar data[100]; int dlen=0;
+    data[dlen++]=(uchar)witver;
+    __private uchar prog_local[40];
+    for(int i=0;i<prog_len;i++) prog_local[i]=prog[i];
+    __private uchar prog5[100];
+    int m=convert_bits_8_to_5(prog_local,prog_len,prog5);
+    for(int i=0;i<m;i++) data[dlen++]=prog5[i];
+
+    __private uchar chk[6]; bech32_create_checksum(hrp,data,dlen,chk);
+
+    int pos=0; while(hrp[pos]!=0){ out[pos]=hrp[pos]; pos++; }
+    out[pos++]='1';
+    for(int i=0;i<dlen;i++) out[pos++]=BECH32_CHARSET[data[i]];
+    for(int i=0;i<6;i++) out[pos++]=BECH32_CHARSET[chk[i]];
+    out[pos]=0;
+    return pos;
+}
+
+/* ======== Base58Check ======== */
+__constant char BASE58_ALPHABET[59]="123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+
+inline int base58check_encode(const __global uchar *in,int in_len,__global char*out){
+    int zero=0; while(zero<in_len && in[zero]==0) zero++;
+    __private uchar tmp[64]; for(int i=0;i<in_len;i++) tmp[i]=in[i];
+
+    int size=in_len*138/100+1;
+    __private uchar b58[200]; for(int i=0;i<size;i++) b58[i]=0;
+
+    int length=0;
+    for(int i=zero;i<in_len;i++){
+        int carry=tmp[i]; int j=0;
+        for(int k=size-1;(carry!=0||j<length)&&k>=0;k--,j++){
+            carry += 256*b58[k];
+            b58[k]=carry%58;
+            carry/=58;
+        }
+        length=j;
+    }
+    int it=size-length; while(it<size && b58[it]==0) it++;
+
+    int pos=0; for(int i=0;i<zero;i++) out[pos++]='1';
+    for(;it<size;it++) out[pos++]=BASE58_ALPHABET[b58[it]];
+    out[pos]=0; return pos;
+}
+
+inline void p2pkh_to_base58(const __global uchar *hash20,__global char*out){
+    __private uchar payload[25];
+    payload[0]=0x00; for(int i=0;i<20;i++) payload[1+i]=hash20[i];
+    __private uchar d[32];
+    sha256((__global const uchar*)payload,21,(__global uchar*)d);
+    sha256((__global const uchar*)d,32,(__global uchar*)d);
+    for(int i=0;i<4;i++) payload[21+i]=d[i];
+    base58check_encode((__global const uchar*)payload,25,out);
+}
+inline void p2sh_to_base58(const __global uchar *hash20,__global char*out){
+    __private uchar payload[25];
+    payload[0]=0x05; for(int i=0;i<20;i++) payload[1+i]=hash20[i];
+    __private uchar d[32];
+    sha256((__global const uchar*)payload,21,(__global uchar*)d);
+    sha256((__global const uchar*)d,32,(__global uchar*)d);
+    for(int i=0;i<4;i++) payload[21+i]=d[i];
+    base58check_encode((__global const uchar*)payload,25,out);
+}
+
+/* ======== High-level helpers ======== */
+/* 生成 P2WPKH bech32 地址（HRP 用 BTC_BECH32_HRP） */
+inline int make_p2wpkh_bech32(const __global uchar *pubkey,uint pubkey_len,__global char*out){
+    __private uchar h160[20];
+    hash160_pubkey(pubkey,pubkey_len,(__global uchar*)h160);
+    return bech32_encode_segwit(out, BTC_BECH32_HRP, 0, (__global const uchar*)h160, 20);
+}
+/* 生成 P2WSH bech32 地址（witness program = SHA256(script) 32B） */
+inline int make_p2wsh_bech32(const __global uchar *script,uint script_len,__global char*out){
+    __private uchar sha[32];
+    sha256(script,script_len,(__global uchar*)sha);
+    return bech32_encode_segwit(out, BTC_BECH32_HRP, 0, (__global const uchar*)sha, 32);
+}
+
+/* ======== Example Kernel: switch-case 随机四种地址 ======== */
+/* 输入：
+   - pubkeys:  公钥缓冲（按固定步长 pubkey_stride 分隔），每个 pubkey 实际长度为 pubkey_len
+   - scripts:  脚本缓冲（按固定步长 script_stride 分隔），每段脚本实际长度为 script_len
+   - 输出：
+   - out_addr: 字符串输出缓冲（每条地址预留 out_stride 字节，建议 >= 92），以 '\0' 结尾
+*/
+__kernel void generate_random_btc_address_switch(
+    __global const uchar *pubkeys, uint pubkey_len, uint pubkey_stride,
+    __global const uchar *scripts, uint script_len, uint script_stride,
+    __global char *out_addr, uint out_stride)
+{
+    uint gid = get_global_id(0);
+    const __global uchar *pubkey = pubkeys + gid * pubkey_stride;
+    const __global uchar *script = scripts + gid * script_stride;
+    __global char *dst = out_addr + gid * out_stride;
+
+    /* 简单“随机”来源：gid % 4 */
+    int t = (int)(gid & 3);
+
+    switch (t) {
+        case 0: { /* P2PKH -> Base58 */
+            __private uchar h160[20];
+            hash160_pubkey(pubkey, pubkey_len, (__global uchar*)h160);
+            p2pkh_to_base58((__global const uchar*)h160, dst);
+            break;
+        }
+        case 1: { /* P2SH -> Base58 */
+            __private uchar h160[20];
+            hash160_script(script, script_len, (__global uchar*)h160);
+            p2sh_to_base58((__global const uchar*)h160, dst);
+            break;
+        }
+        case 2: { /* P2WPKH -> bech32 */
+            make_p2wpkh_bech32(pubkey, pubkey_len, dst);
+            break;
+        }
+        case 3: { /* P2WSH -> bech32 */
+            make_p2wsh_bech32(script, script_len, dst);
+            break;
+        }
+        default: {
+            dst[0] = 0; /* shouldn't happen */
+        }
+    }
+}
+
+#endif /* BTC_ADDR_CLH */

@@ -14,11 +14,10 @@ import (
 
 // ExecutorConfig 执行器配置
 type ExecutorConfig struct {
-	ProgramPath string            `mapstructure:"program_path"`
-	Args        []string          `mapstructure:"args"`
-	Timeout     int               `mapstructure:"timeout"` // 超时时间（秒）
-	WorkingDir  string            `mapstructure:"working_dir"`
-	Env         map[string]string `mapstructure:"env"`
+	ProgramPath string   `mapstructure:"program_path"`
+	Args        []string `mapstructure:"args"`
+	Timeout     int      `mapstructure:"timeout"` // 超时时间（秒）
+	WorkingDir  string   `mapstructure:"working_dir"`
 }
 
 // ExecutionResult 执行结果
@@ -140,13 +139,6 @@ func (e *Executor) Execute(params map[string]interface{}) (*ExecutionResult, err
 	// 设置工作目录
 	if e.config.WorkingDir != "" {
 		cmd.Dir = e.config.WorkingDir
-	}
-
-	// 设置环境变量
-	if len(e.config.Env) > 0 {
-		for key, value := range e.config.Env {
-			cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, value))
-		}
 	}
 
 	//设置超时

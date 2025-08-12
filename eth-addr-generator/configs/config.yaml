@@ -1,8 +1,3 @@
-# 日志等级配置
-logger:
-  level : "info"
-  stdout: true
-
 # 数据库配置
 database:
   host: "127.0.0.1"
@@ -26,8 +21,6 @@ executor:
   ]                # 固定参数列表
   timeout: 300             # 执行超时时间（秒） 暂定5min
   working_dir: "."        # 工作目录
-  env:                    # 环境变量
-    PATH: ""
 
 # 应用配置
 app:

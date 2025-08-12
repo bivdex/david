@@ -108,7 +108,6 @@ go run cmd/main.go configs/config.yaml
 - `args`: 固定参数列表
 - `timeout`: 执行超时时间（秒）
 - `working_dir`: 工作目录
-- `env`: 环境变量
 
 ### 应用配置
 

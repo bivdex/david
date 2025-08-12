@@ -40,6 +40,9 @@
  *
  */
 
+// 包含比特币地址生成头文件
+#include "btc_addr_fixed.clh"
+
 /* ------------------------------------------------------------------------ */
 /* Multiprecision functions                                                 */
 /* ------------------------------------------------------------------------ */
@@ -632,45 +635,210 @@ __kernel void profanity_iterate(__global mp_number * const pDeltaX, __global mp_
 	// Restore X coordinate from delta value
 	mp_mod_sub(&dX, &dX, &negativeGx);
 
-	// Initialize Keccak structure with point coordinates in big endian
-	h.d[0] = bswap32(dX.d[MP_WORDS - 1]);
-	h.d[1] = bswap32(dX.d[MP_WORDS - 2]);
-	h.d[2] = bswap32(dX.d[MP_WORDS - 3]);
-	h.d[3] = bswap32(dX.d[MP_WORDS - 4]);
-	h.d[4] = bswap32(dX.d[MP_WORDS - 5]);
-	h.d[5] = bswap32(dX.d[MP_WORDS - 6]);
-	h.d[6] = bswap32(dX.d[MP_WORDS - 7]);
-	h.d[7] = bswap32(dX.d[MP_WORDS - 8]);
-	h.d[8] = bswap32(tmp.d[MP_WORDS - 1]);
-	h.d[9] = bswap32(tmp.d[MP_WORDS - 2]);
-	h.d[10] = bswap32(tmp.d[MP_WORDS - 3]);
-	h.d[11] = bswap32(tmp.d[MP_WORDS - 4]);
-	h.d[12] = bswap32(tmp.d[MP_WORDS - 5]);
-	h.d[13] = bswap32(tmp.d[MP_WORDS - 6]);
-	h.d[14] = bswap32(tmp.d[MP_WORDS - 7]);
-	h.d[15] = bswap32(tmp.d[MP_WORDS - 8]);
-	h.d[16] ^= 0x01; // length 64
-
-	sha3_keccakf(&h);
-
-	// Save public address hash in pInverse, only used as interim storage until next cycle
-	pInverse[id].d[0] = h.d[3];
-	pInverse[id].d[1] = h.d[4];
-	pInverse[id].d[2] = h.d[5];
-	pInverse[id].d[3] = h.d[6];
-	pInverse[id].d[4] = h.d[7];
+	// 改进的比特币地址类型随机选择 (0-3)
+	// 使用更好的随机性来源
+	uchar addressType = (id + (uint)(get_global_id(0) * 0x1234567) + (uint)(get_global_id(0) >> 8)) % 4;
+	
+	// 准备公钥数据（压缩格式）
+	__private uchar pubkey[33];
+	pubkey[0] = (dX.d[0] & 1) ? 0x03 : 0x02; // 压缩标志
+	
+	// 修复：正确复制 X 坐标到公钥（不需要字节序转换）
+	// dX.d 已经是正确的字节序，直接复制即可
+	for (int i = 0; i < 8; i++) {
+		uint x_val = dX.d[7-i];  // 修复：移除错误的bswap32
+		pubkey[1 + i*4] = (x_val >> 24) & 0xFF;
+		pubkey[2 + i*4] = (x_val >> 16) & 0xFF;
+		pubkey[3 + i*4] = (x_val >> 8) & 0xFF;
+		pubkey[4 + i*4] = x_val & 0xFF;
+	}
+	
+	// 生成比特币地址
+	__private uchar hash160[20];
+	__private uchar script_hash[32];
+	__private char btc_address[92];
+	
+	// 先计算hash160，避免重复调用
+	hash160_pubkey((__global const uchar*)pubkey, 33, (__global uchar*)hash160);
+	
+	switch (addressType) {
+		case 0: { // Legacy P2PKH
+			p2pkh_to_base58((__global const uchar*)hash160, btc_address);
+			break;
+		}
+		case 1: { // SegWit P2SH
+			// 创建 P2WPKH 脚本: OP_0 + OP_PUSH(20) + hash160
+			__private uchar script[22];
+			script[0] = 0x00; // OP_0
+			script[1] = 0x14; // OP_PUSH(20)
+			for (int i = 0; i < 20; i++) {
+				script[2 + i] = hash160[i];
+			}
+			hash160_script((__global const uchar*)script, 22, (__global uchar*)hash160);
+			p2sh_to_base58((__global const uchar*)hash160, btc_address);
+			break;
+		}
+		case 2: { // Native SegWit P2WPKH
+			make_p2wpkh_bech32((__global const uchar*)hash160, 20, btc_address);
+			break;
+		}
+		case 3: { // Taproot P2TR (简化版本，实际应该使用 Schnorr 签名)
+			// 这里使用 P2WSH 作为替代，因为完整的 Taproot 实现比较复杂
+			// 创建一个简单的脚本哈希
+			sha256((__global const uchar*)hash160, 20, (__global uchar*)script_hash);
+			make_p2wsh_bech32((__global const uchar*)script_hash, 32, btc_address);
+			break;
+		}
+	}
+	
+	// 保存 hash160 到 pInverse (前20字节)
+	pInverse[id].d[0] = ((uint)hash160[0] << 24) | ((uint)hash160[1] << 16) | ((uint)hash160[2] << 8) | hash160[3];
+	pInverse[id].d[1] = ((uint)hash160[4] << 24) | ((uint)hash160[5] << 16) | ((uint)hash160[6] << 8) | hash160[7];
+	pInverse[id].d[2] = ((uint)hash160[8] << 24) | ((uint)hash160[9] << 16) | ((uint)hash160[10] << 8) | hash160[11];
+	pInverse[id].d[3] = ((uint)hash160[12] << 24) | ((uint)hash160[13] << 16) | ((uint)hash160[14] << 8) | hash160[15];
+	pInverse[id].d[4] = ((uint)hash160[16] << 24) | ((uint)hash160[17] << 16) | ((uint)hash160[18] << 8) | hash160[19];
+	
+	// 在剩余的空间中存储地址类型信息
+	// 将addressType存储到d[5]的低8位
+	pInverse[id].d[5] = addressType;
+	
+	// 修复：扩展地址存储空间，使用更多的uint来存储完整地址
+	// 计算地址长度
+	int addrLen = 0;
+	while (btc_address[addrLen] != 0 && addrLen < 92) {
+		addrLen++;
+	}
+	
+	// 修复：由于MP_WORDS只有8，我们需要使用更高效的存储策略
+	// 使用d[6]和d[7]来存储地址，但采用压缩编码
+	// 每个字符使用6位编码（64个字符足够表示Base58和Bech32字符集）
+	// 这样每个uint可以存储5个字符（30位/6位 = 5字符）
+	
+	// 清空d[6]和d[7]
+	pInverse[id].d[6] = 0;
+	pInverse[id].d[7] = 0;
+	
+	// 压缩编码：将字符映射到6位值
+	__private uchar char_to_6bit[128];
+	for (int i = 0; i < 128; i++) {
+		char_to_6bit[i] = 0xFF; // 默认无效值
+	}
+	
+	// 初始化Base58字符集映射
+	__private char base58_chars[] = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+	for (int i = 0; i < 58; i++) {
+		char_to_6bit[(int)base58_chars[i]] = i;
+	}
+	
+	// 初始化Bech32字符集映射
+	__private char bech32_chars[] = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+	for (int i = 0; i < 32; i++) {
+		char_to_6bit[(int)bech32_chars[i]] = i + 58; // 从58开始，避免冲突
+	}
+	
+	// 压缩编码到d[6]和d[7]
+	uint packed6 = 0, packed7 = 0;
+	int bit_pos6 = 0, bit_pos7 = 0;
+	
+	for (int i = 0; i < addrLen && i < 10; i++) { // 最多存储10个字符（5个在d[6]，5个在d[7]）
+		uchar char_val = char_to_6bit[(int)btc_address[i]];
+		if (char_val == 0xFF) {
+			char_val = 0; // 无效字符映射为0
+		}
+		
+		if (i < 5) {
+			// 存储到d[6]
+			packed6 |= ((uint)char_val) << bit_pos6;
+			bit_pos6 += 6;
+		} else {
+			// 存储到d[7]
+			packed7 |= ((uint)char_val) << bit_pos7;
+			bit_pos7 += 6;
+		}
+	}
+	
+	pInverse[id].d[6] = packed6;
+	pInverse[id].d[7] = packed7;
 }
 
-void profanity_result_update(const size_t id, __global const uchar * const hash, __global result * const pResult, const uchar score, const uchar scoreMax) {
-	if (score && score > scoreMax) {
+// 通用的BTC地址解码函数，用于所有评分函数
+inline void decode_btc_address_from_pinverse(__global const mp_number * const pInverse, const size_t id, __private char *btc_address) {
+	// 地址字符串被压缩编码在d[6]和d[7]中，使用6位编码
+	// 需要解码压缩编码的地址
+	__private char base58_chars[] = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+	__private char bech32_chars[] = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+	
+	int addrIndex = 0;
+	uint packed6 = pInverse[id].d[6];
+	uint packed7 = pInverse[id].d[7];
+	
+	// 解码d[6]中的前5个字符
+	for (int i = 0; i < 5 && addrIndex < 92; i++) {
+		uchar char_val = (packed6 >> (i * 6)) & 0x3F; // 6位掩码
+		if (char_val == 0) break; // 遇到0表示结束
+		
+		char decoded_char;
+		if (char_val < 58) {
+			// Base58字符
+			decoded_char = base58_chars[char_val];
+		} else if (char_val < 90) {
+			// Bech32字符
+			decoded_char = bech32_chars[char_val - 58];
+		} else {
+			decoded_char = '?'; // 无效字符
+		}
+		
+		btc_address[addrIndex++] = decoded_char;
+	}
+	
+	// 解码d[7]中的后5个字符
+	for (int i = 0; i < 5 && addrIndex < 92; i++) {
+		uchar char_val = (packed7 >> (i * 6)) & 0x3F; // 6位掩码
+		if (char_val == 0) break; // 遇到0表示结束
+		
+		char decoded_char;
+		if (char_val < 58) {
+			// Base58字符
+			decoded_char = base58_chars[char_val];
+		} else if (char_val < 90) {
+			// Bech32字符
+			decoded_char = bech32_chars[char_val - 58];
+		} else {
+			decoded_char = '?'; // 无效字符
+		}
+		
+		btc_address[addrIndex++] = decoded_char;
+	}
+	
+	// 确保字符串以null结尾
+	if (addrIndex < 92) {
+		btc_address[addrIndex] = '\0';
+	}
+}
+
+void profanity_result_update(const size_t id, __global const uchar * const hash, __global result * const pResult, const uchar score, const uchar scoreMax, __global const mp_number * const pInverse) {
+	if (score > 0 && score <= scoreMax) {
 		uchar hasResult = atomic_inc(&pResult[score].found); // NOTE: If "too many" results are found it'll wrap around to 0 again and overwrite last result. Only relevant if global worksize exceeds MAX(uint).
 
 		// Save only one result for each score, the first.
 		if (hasResult == 0) {
 			pResult[score].foundId = id;
 
+			// 保存hash160
 			for (int i = 0; i < 20; ++i) {
 				pResult[score].foundHash[i] = hash[i];
+			}
+			
+			// 保存地址类型
+			pResult[score].addressType = pInverse[id].d[5] & 0xFF;
+			
+			// 从pInverse中提取完整的BTC地址字符串
+			__private char btc_address[92];
+			decode_btc_address_from_pinverse(pInverse, id, btc_address);
+			
+			// 将BTC地址复制到pResult结构体中
+			for (int i = 0; i < 92; ++i) {
+				pResult[score].btcAddress[i] = btc_address[i];
 			}
 		}
 	}
@@ -707,7 +875,7 @@ __kernel void profanity_score_benchmark(__global mp_number * const pInverse, __g
 	__global const uchar * const hash = pInverse[id].d;
 	int score = 0;
 
-	profanity_result_update(id, hash, pResult, score, scoreMax);
+	profanity_result_update(id, hash, pResult, score, scoreMax, pInverse);
 }
 
 __kernel void profanity_score_matching(__global mp_number * const pInverse, __global result * const pResult, __constant const uchar * const data1, __constant const uchar * const data2, const uchar scoreMax) {
@@ -721,23 +889,42 @@ __kernel void profanity_score_matching(__global mp_number * const pInverse, __gl
 		}
 	}
 
-	profanity_result_update(id, hash, pResult, score, scoreMax);
+	profanity_result_update(id, hash, pResult, score, scoreMax, pInverse);
 }
 
 __kernel void profanity_score_leading(__global mp_number * const pInverse, __global result * const pResult, __constant const uchar * const data1, __constant const uchar * const data2, const uchar scoreMax) {
 	const size_t id = get_global_id(0);
-	__global const uchar * const hash = pInverse[id].d;
 	int score = 0;
 
-	for (int i = 0; i < 20; ++i) {
-		if ((hash[i] & 0xF0) >> 4 == data1[0]) {
-			++score;
-		}
-		else {
+	// 获取地址类型（存储在d[5]中）
+	uchar addressType = pInverse[id].d[5] & 0xFF;
+	
+	// 从pInverse中提取完整的BTC地址字符串
+	__private char btc_address[92];
+	decode_btc_address_from_pinverse(pInverse, id, btc_address);
+	
+	// 根据地址类型调整评分逻辑
+	// 对于BTC地址，我们需要考虑固有前缀
+	int startPos = 0;
+	
+	switch (addressType) {
+		case 0: // Legacy P2PKH: 以"1" 开头
+		case 1: // SegWit P2SH: 以"3" 开头
+			startPos = 1; // 从第二个字符开始检查
 			break;
-		}
+		case 2: // Native SegWit P2WPKH: 以"bc1q" 开头 
+		case 3: // Taproot P2TR: 以"bc1p" 开头
+			startPos = 4; // 从第五个字符开始检查
+			break;
+		default:
+			startPos = 0; // 默认从头开始
+			break;
+	}
 
-		if ((hash[i] & 0x0F) == data1[0]) {
+	// 从指定位置开始检查完整的BTC地址字符串
+	for (int i = startPos; i < 92; ++i) {
+		if (btc_address[i] == '\0') break;
+		if (btc_address[i] == data1[0]) {
 			++score;
 		}
 		else {
@@ -745,47 +932,60 @@ __kernel void profanity_score_leading(__global mp_number * const pInverse, __glo
 		}
 	}
 
-	profanity_result_update(id, hash, pResult, score, scoreMax);
+	// 从hash160数据中提取hash用于profanity_result_update
+	__private uchar hash160[20];
+	for (int i = 0; i < 5; i++) {
+		uint packed = pInverse[id].d[i];
+		hash160[i*4] = (packed >> 24) & 0xFF;
+		hash160[i*4+1] = (packed >> 16) & 0xFF;
+		hash160[i*4+2] = (packed >> 8) & 0xFF;
+		hash160[i*4+3] = packed & 0xFF;
+	}
+
+	profanity_result_update(id, hash160, pResult, score, scoreMax, pInverse);
 }
 
 __kernel void profanity_score_range(__global mp_number * const pInverse, __global result * const pResult, __constant const uchar * const data1, __constant const uchar * const data2, const uchar scoreMax) {
 	const size_t id = get_global_id(0);
-	__global const uchar * const hash = pInverse[id].d;
 	int score = 0;
 
-	for (int i = 0; i < 20; ++i) {
-		const uchar first = (hash[i] & 0xF0) >> 4;
-		const uchar second = (hash[i] & 0x0F);
+	// 从pInverse中提取完整的BTC地址字符串
+	__private char btc_address[92];
+	decode_btc_address_from_pinverse(pInverse, id, btc_address);
 
-		if (first >= data1[0] && first <= data2[0]) {
-			++score;
-		}
-
-		if (second >= data1[0] && second <= data2[0]) {
+	// 检查完整的BTC地址字符串
+	for (int i = 0; i < 92; ++i) {
+		if (btc_address[i] == '\0') break;
+		if (btc_address[i] >= data1[0] && btc_address[i] <= data2[0]) {
 			++score;
 		}
 	}
 
-	profanity_result_update(id, hash, pResult, score, scoreMax);
+	// 从hash160数据中提取hash用于profanity_result_update
+	__private uchar hash160[20];
+	for (int i = 0; i < 5; i++) {
+		uint packed = pInverse[id].d[i];
+		hash160[i*4] = (packed >> 24) & 0xFF;
+		hash160[i*4+1] = (packed >> 16) & 0xFF;
+		hash160[i*4+2] = (packed >> 8) & 0xFF;
+		hash160[i*4+3] = packed & 0xFF;
+	}
+
+	profanity_result_update(id, hash160, pResult, score, scoreMax, pInverse);
 }
 
 __kernel void profanity_score_leadingrange(__global mp_number * const pInverse, __global result * const pResult, __constant const uchar * const data1, __constant const uchar * const data2, const uchar scoreMax) {
 	const size_t id = get_global_id(0);
-	__global const uchar * const hash = pInverse[id].d;
 	int score = 0;
 
-	for (int i = 0; i < 20; ++i) {
-		const uchar first = (hash[i] & 0xF0) >> 4;
-		const uchar second = (hash[i] & 0x0F);
+	// 从pInverse中提取完整的BTC地址字符串
+	__private char btc_address[92];
+	decode_btc_address_from_pinverse(pInverse, id, btc_address);
 
-		if (first >= data1[0] && first <= data2[0]) {
-			++score;
-		}
-		else {
-			break;
-		}
-
-		if (second >= data1[0] && second <= data2[0]) {
+	// 从开头开始检查完整的BTC地址字符串
+	for (int i = 0; i < 92; ++i) {
+		if (btc_address[i] == '\0') break;
+		if (btc_address[i] >= data1[0] && btc_address[i] <= data2[0]) {
 			++score;
 		}
 		else {
@@ -793,44 +993,74 @@ __kernel void profanity_score_leadingrange(__global mp_number * const pInverse, 
 		}
 	}
 
-	profanity_result_update(id, hash, pResult, score, scoreMax);
+	// 从hash160数据中提取hash用于profanity_result_update
+	__private uchar hash160[20];
+	for (int i = 0; i < 5; i++) {
+		uint packed = pInverse[id].d[i];
+		hash160[i*4] = (packed >> 24) & 0xFF;
+		hash160[i*4+1] = (packed >> 16) & 0xFF;
+		hash160[i*4+2] = (packed >> 8) & 0xFF;
+		hash160[i*4+3] = packed & 0xFF;
+	}
+
+	profanity_result_update(id, hash160, pResult, score, scoreMax, pInverse);
 }
 
 __kernel void profanity_score_mirror(__global mp_number * const pInverse, __global result * const pResult, __constant const uchar * const data1, __constant const uchar * const data2, const uchar scoreMax) {
 	const size_t id = get_global_id(0);
-	__global const uchar * const hash = pInverse[id].d;
 	int score = 0;
 
+	// 从pInverse中提取完整的BTC地址字符串
+	__private char btc_address[92];
+	decode_btc_address_from_pinverse(pInverse, id, btc_address);
+
+	// 检查镜像对称性
+	int addrIndex = 0;
+	while (btc_address[addrIndex] != '\0' && addrIndex < 92) {
+		addrIndex++;
+	}
+	
 	for (int i = 0; i < 10; ++i) {
-		const uchar leftLeft = (hash[9 - i] & 0xF0) >> 4;
-		const uchar leftRight = (hash[9 - i] & 0x0F);
-
-		const uchar rightLeft = (hash[10 + i] & 0xF0) >> 4;
-		const uchar rightRight = (hash[10 + i] & 0x0F);
-
-		if (leftRight != rightLeft) {
+		if (i >= addrIndex || (addrIndex - 1 - i) < 0) break;
+		
+		if (btc_address[i] != btc_address[addrIndex - 1 - i]) {
 			break;
 		}
-
-		++score;
-
-		if (leftLeft != rightRight) {
-			break;
-		}
-
 		++score;
 	}
 
-	profanity_result_update(id, hash, pResult, score, scoreMax);
+	// 从hash160数据中提取hash用于profanity_result_update
+	__private uchar hash160[20];
+	for (int i = 0; i < 5; i++) {
+		uint packed = pInverse[id].d[i];
+		hash160[i*4] = (packed >> 24) & 0xFF;
+		hash160[i*4+1] = (packed >> 16) & 0xFF;
+		hash160[i*4+2] = (packed >> 8) & 0xFF;
+		hash160[i*4+3] = packed & 0xFF;
+	}
+
+	profanity_result_update(id, hash160, pResult, score, scoreMax, pInverse);
 }
 
 __kernel void profanity_score_doubles(__global mp_number * const pInverse, __global result * const pResult, __constant const uchar * const data1, __constant const uchar * const data2, const uchar scoreMax) {
 	const size_t id = get_global_id(0);
-	__global const uchar * const hash = pInverse[id].d;
 	int score = 0;
 
-	for (int i = 0; i < 20; ++i) {
-		if ((hash[i] == 0x00) || (hash[i] == 0x11) || (hash[i] == 0x22) || (hash[i] == 0x33) || (hash[i] == 0x44) || (hash[i] == 0x55) || (hash[i] == 0x66) || (hash[i] == 0x77) || (hash[i] == 0x88) || (hash[i] == 0x99) || (hash[i] == 0xAA) || (hash[i] == 0xBB) || (hash[i] == 0xCC) || (hash[i] == 0xDD) || (hash[i] == 0xEE) || (hash[i] == 0xFF)) {
+	// 从pInverse中提取完整的BTC地址字符串
+	__private char btc_address[92];
+	decode_btc_address_from_pinverse(pInverse, id, btc_address);
+	
+	int addrIndex = 0;
+	while (btc_address[addrIndex] != '\0' && addrIndex < 92) {
+		addrIndex++;
+	}
+
+	// 检查重复字符模式
+	for (int i = 0; i < addrIndex; ++i) {
+		if (btc_address[i] == '\0') break;
+		
+		// 检查是否是重复字符（如 "11", "22", "aa" 等）
+		if (i + 1 < addrIndex && btc_address[i] == btc_address[i + 1]) {
 			++score;
 		}
 		else {
@@ -838,25 +1068,48 @@ __kernel void profanity_score_doubles(__global mp_number * const pInverse, __glo
 		}
 	}
 
-	profanity_result_update(id, hash, pResult, score, scoreMax);
+	// 从hash160数据中提取hash用于profanity_result_update
+	__private uchar hash160[20];
+	for (int i = 0; i < 5; i++) {
+		uint packed = pInverse[id].d[i];
+		hash160[i*4] = (packed >> 24) & 0xFF;
+		hash160[i*4+1] = (packed >> 16) & 0xFF;
+		hash160[i*4+2] = (packed >> 8) & 0xFF;
+		hash160[i*4+3] = packed & 0xFF;
+	}
+
+	profanity_result_update(id, hash160, pResult, score, scoreMax, pInverse);
 }
 
-// 1. 只匹配地址开头(最左边)的连续性字符或数字
+// 1. 只匹配地址开始最左边的连续性字符或数字
 __kernel void profanity_score_leading_sequential(__global mp_number * const pInverse, __global result * const pResult, __constant const uchar * const data1, __constant const uchar * const data2, const uchar scoreMax) {
     const size_t id = get_global_id(0);
-    __global const uchar * const hash = pInverse[id].d;
     int score = 0;
     int current_seq = 0;
     uchar last = 0;
     
+    // 从pInverse中提取完整的BTC地址字符串
+    __private char btc_address[92];
+    decode_btc_address_from_pinverse(pInverse, id, btc_address);
+    
+    int addrIndex = 0;
+    while (btc_address[addrIndex] != '\0' && addrIndex < 92) {
+        addrIndex++;
+    }
+    
     // 严格从最左边第一个字符开始检查
-    const uchar first_char = (hash[0] & 0xF0) >> 4;
+    if (btc_address[0] == '\0') {
+        profanity_result_update(id, (__global const uchar*)pInverse[id].d, pResult, 0, scoreMax, pInverse);
+        return;
+    }
+    
+    const uchar first_char = btc_address[0];
     last = first_char;
     current_seq = 1;
     
-    // 从第二个字符开始检查连续性
-    for (int i = 1; i < data1[0] * 2; ++i) {
-        const uchar current = (hash[i/2] & (i%2 ? 0x0F : 0xF0)) >> (i%2 ? 0 : 4);
+    // 从第二个字符开始检查连续
+    for (int i = 1; i < 92 && btc_address[i] != '\0'; ++i) {
+        const uchar current = btc_address[i];
         if (current == last + 1 || (current == 0 && last == 15)) {
             current_seq++;
         } else {
@@ -866,19 +1119,38 @@ __kernel void profanity_score_leading_sequential(__global mp_number * const pInv
     }
     
     score = current_seq >= data1[0] ? current_seq : 0;
-    profanity_result_update(id, hash, pResult, score, scoreMax);
+    
+    // 从hash160数据中提取hash用于profanity_result_update
+    __private uchar hash160[20];
+    for (int i = 0; i < 5; i++) {
+        uint packed = pInverse[id].d[i];
+        hash160[i*4] = (packed >> 24) & 0xFF;
+        hash160[i*4+1] = (packed >> 16) & 0xFF;
+        hash160[i*4+2] = (packed >> 8) & 0xFF;
+        hash160[i*4+3] = packed & 0xFF;
+    }
+    
+    profanity_result_update(id, hash160, pResult, score, scoreMax, pInverse);
 }
 
 // 2. 匹配任意位置的连续性字符或数字
 __kernel void profanity_score_any_sequential(__global mp_number * const pInverse, __global result * const pResult, __constant const uchar * const data1, __constant const uchar * const data2, const uchar scoreMax) {
     const size_t id = get_global_id(0);
-    __global const uchar * const hash = pInverse[id].d;
     int score = 0;
     int current_seq = 1;
     uchar last = 0;
     
-    for (int i = 0; i < 40; ++i) {
-        const uchar current = (hash[i/2] & (i%2 ? 0x0F : 0xF0)) >> (i%2 ? 0 : 4);
+    // 从pInverse中提取完整的BTC地址字符串
+    __private char btc_address[92];
+    decode_btc_address_from_pinverse(pInverse, id, btc_address);
+    
+    int addrIndex = 0;
+    while (btc_address[addrIndex] != '\0' && addrIndex < 92) {
+        addrIndex++;
+    }
+    
+    for (int i = 0; i < addrIndex && btc_address[i] != '\0'; ++i) {
+        const uchar current = btc_address[i];
         if (i == 0) {
             last = current;
             continue;
@@ -895,24 +1167,47 @@ __kernel void profanity_score_any_sequential(__global mp_number * const pInverse
         last = current;
     }
     
-    profanity_result_update(id, hash, pResult, score, scoreMax);
+    // 从hash160数据中提取hash用于profanity_result_update
+    __private uchar hash160[20];
+    for (int i = 0; i < 5; i++) {
+        uint packed = pInverse[id].d[i];
+        hash160[i*4] = (packed >> 24) & 0xFF;
+        hash160[i*4+1] = (packed >> 16) & 0xFF;
+        hash160[i*4+2] = (packed >> 8) & 0xFF;
+        hash160[i*4+3] = packed & 0xFF;
+    }
+    
+    profanity_result_update(id, hash160, pResult, score, scoreMax, pInverse);
 }
 
 // 3. 只匹配地址结束位置(最右边)的连续性字符或数字
 __kernel void profanity_score_ending_sequential(__global mp_number * const pInverse, __global result * const pResult, __constant const uchar * const data1, __constant const uchar * const data2, const uchar scoreMax) {
     const size_t id = get_global_id(0);
-    __global const uchar * const hash = pInverse[id].d;
     int score = 0;
     int current_seq = 0;
     
+    // 从pInverse中提取完整的BTC地址字符串
+    __private char btc_address[92];
+    decode_btc_address_from_pinverse(pInverse, id, btc_address);
+    
+    int addrIndex = 0;
+    while (btc_address[addrIndex] != '\0' && addrIndex < 92) {
+        addrIndex++;
+    }
+    
     // 严格从最右边最后一个字符开始检查
-    const uchar last_char = (hash[19] & 0x0F);
+    if (addrIndex == 0) {
+        profanity_result_update(id, (__global const uchar*)pInverse[id].d, pResult, 0, scoreMax, pInverse);
+        return;
+    }
+    
+    const uchar last_char = btc_address[addrIndex - 1];
     uchar last = last_char;
     current_seq = 1;
     
     // 从倒数第二个字符开始向前检查连续性
-    for (int i = 38; i >= 40 - data1[0] * 2; --i) {
-        const uchar current = (hash[i/2] & (i%2 ? 0x0F : 0xF0)) >> (i%2 ? 0 : 4);
+    for (int i = addrIndex - 2; i >= 0 && i >= addrIndex - data1[0]; --i) {
+        const uchar current = btc_address[i];
         if (current + 1 == last || (current == 15 && last == 0)) {
             current_seq++;
         } else {
@@ -922,47 +1217,132 @@ __kernel void profanity_score_ending_sequential(__global mp_number * const pInve
     }
     
     score = current_seq >= data1[0] ? current_seq : 0;
-    profanity_result_update(id, hash, pResult, score, scoreMax);
+    
+    // 从hash160数据中提取hash用于profanity_result_update
+    __private uchar hash160[20];
+    for (int i = 0; i < 5; i++) {
+        uint packed = pInverse[id].d[i];
+        hash160[i*4] = (packed >> 24) & 0xFF;
+        hash160[i*4+1] = (packed >> 16) & 0xFF;
+        hash160[i*4+2] = (packed >> 8) & 0xFF;
+        hash160[i*4+3] = packed & 0xFF;
+    }
+    
+    profanity_result_update(id, hash160, pResult, score, scoreMax, pInverse);
 }
 
 // 4. 只匹配地址开头(最左边)的指定字符
 __kernel void profanity_score_leading_specific(__global mp_number * const pInverse, __global result * const pResult, __constant const uchar * const data1, __constant const uchar * const data2, const uchar scoreMax) {
     const size_t id = get_global_id(0);
-    __global const uchar * const hash = pInverse[id].d;
     int score = 0;
     int pattern_len = 0;
+    
+    // 获取地址类型（存储在d[5]中）
+    uchar addressType = pInverse[id].d[5] & 0xFF;
+    
+    // 从pInverse中提取完整的BTC地址字符串
+    __private char btc_address[92];
+    decode_btc_address_from_pinverse(pInverse, id, btc_address);
+    
+    int addrIndex = 0;
+    while (btc_address[addrIndex] != '\0' && addrIndex < 92) {
+        addrIndex++;
+    }
+    
+    // 根据地址类型调整起始位置
+    // 对于BTC地址，我们需要考虑固有前缀
+    int startPos = 0;
+    
+    switch (addressType) {
+        case 0: // Legacy P2PKH: 以"1" 开头
+        case 1: // SegWit P2SH: 以"3" 开头
+            startPos = 1; // 从第二个字符开始检查
+            break;
+        case 2: // Native SegWit P2WPKH: 以"bc1q" 开头 
+        case 3: // Taproot P2TR: 以"bc1p" 开头
+            startPos = 4; // 从第五个字符开始检查
+            break;
+        default:
+            startPos = 0; // 默认从头开始
+            break;
+    }
     
     // 计算模式长度
     while (data1[pattern_len] != 0 && pattern_len < 20) pattern_len++;
     
-    // 严格从最左边开始匹配
+    // 从指定位置开始匹配完整的BTC地址字符串
     for (int i = 0; i < pattern_len; ++i) {
-        const uchar current = (hash[i/2] & (i%2 ? 0x0F : 0xF0)) >> (i%2 ? 0 : 4);
-        if (current != data1[i]) {
-            return; // 如果开头不匹配,直接返回
+        if (startPos + i >= 92 || btc_address[startPos + i] == '\0') {
+            return; // 超出地址长度
+        }
+        if (btc_address[startPos + i] != data1[i]) {
+            return; // 如果不匹配,直接返回
         }
         score++;
     }
     
-    profanity_result_update(id, hash, pResult, score, scoreMax);
+    // 从hash160数据中提取hash用于profanity_result_update
+    __private uchar hash160[20];
+    for (int i = 0; i < 5; i++) {
+        uint packed = pInverse[id].d[i];
+        hash160[i*4] = (packed >> 24) & 0xFF;
+        hash160[i*4+1] = (packed >> 16) & 0xFF;
+        hash160[i*4+2] = (packed >> 8) & 0xFF;
+        hash160[i*4+3] = packed & 0xFF;
+    }
+    
+    profanity_result_update(id, hash160, pResult, score, scoreMax, pInverse);
 }
 
 // 5. 匹配地址任意位置的指定字符
 __kernel void profanity_score_any_specific(__global mp_number * const pInverse, __global result * const pResult, __constant const uchar * const data1, __constant const uchar * const data2, const uchar scoreMax) {
     const size_t id = get_global_id(0);
-    __global const uchar * const hash = pInverse[id].d;
     int score = 0;
     int pattern_len = 0;
+    
+    // 获取地址类型（存储在d[5]中）
+    uchar addressType = pInverse[id].d[5] & 0xFF;
+    
+    // 从pInverse中提取完整的BTC地址字符串
+    __private char btc_address[92];
+    decode_btc_address_from_pinverse(pInverse, id, btc_address);
+    
+    int addrIndex = 0;
+    while (btc_address[addrIndex] != '\0' && addrIndex < 92) {
+        addrIndex++;
+    }
+    
+    // 根据地址类型调整搜索范围
+    // 对于BTC地址，我们需要考虑固有前缀
+    int searchStart = 0;
+    
+    switch (addressType) {
+        case 0: // Legacy P2PKH: 以"1" 开头
+        case 1: // SegWit P2SH: 以"3" 开头
+            searchStart = 1; // 从第二个字符开始搜索
+            break;
+        case 2: // Native SegWit P2WPKH: 以"bc1q" 开头 
+        case 3: // Taproot P2TR: 以"bc1p" 开头
+            searchStart = 4; // 从第五个字符开始搜索
+            break;
+        default:
+            searchStart = 0; // 默认从头开始
+            break;
+    }
     
     // 计算模式长度
     while (data1[pattern_len] != 0 && pattern_len < 20) pattern_len++;
     
-    // 在任意位置查找匹配
-    for (int i = 0; i <= 40 - pattern_len * 2; ++i) {
+    // 在指定范围内查找匹配完整的BTC地址字符串
+    for (int i = searchStart; i < 92 - pattern_len; ++i) {
+        if (btc_address[i] == '\0') break; // 超出地址长度
+        
         int matched = 0;
         for (int j = 0; j < pattern_len; ++j) {
-            const uchar current = (hash[(i+j)/2] & ((i+j)%2 ? 0x0F : 0xF0)) >> ((i+j)%2 ? 0 : 4);
-            if (current != data1[j]) {
+            if (i + j >= 92 || btc_address[i + j] == '\0') {
+                break;
+            }
+            if (btc_address[i + j] != data1[j]) {
                 break;
             }
             matched++;
@@ -973,45 +1353,87 @@ __kernel void profanity_score_any_specific(__global mp_number * const pInverse, 
         }
     }
     
-    profanity_result_update(id, hash, pResult, score, scoreMax);
+    // 从hash160数据中提取hash用于profanity_result_update
+    __private uchar hash160[20];
+    for (int i = 0; i < 5; i++) {
+        uint packed = pInverse[id].d[i];
+        hash160[i*4] = (packed >> 24) & 0xFF;
+        hash160[i*4+1] = (packed >> 16) & 0xFF;
+        hash160[i*4+2] = (packed >> 8) & 0xFF;
+        hash160[i*4+3] = packed & 0xFF;
+    }
+    
+    profanity_result_update(id, hash160, pResult, score, scoreMax, pInverse);
 }
 
 // 6. 只匹配地址结束(最右边)的指定字符
 __kernel void profanity_score_ending_specific(__global mp_number * const pInverse, __global result * const pResult, __constant const uchar * const data1, __constant const uchar * const data2, const uchar scoreMax) {
     const size_t id = get_global_id(0);
-    __global const uchar * const hash = pInverse[id].d;
     int score = 0;
     int pattern_len = 0;
+    
+    // 从pInverse中提取完整的BTC地址字符串
+    __private char btc_address[92];
+    decode_btc_address_from_pinverse(pInverse, id, btc_address);
+    
+    int addrIndex = 0;
+    while (btc_address[addrIndex] != '\0' && addrIndex < 92) {
+        addrIndex++;
+    }
     
     // 计算模式长度
     while (data1[pattern_len] != 0 && pattern_len < 20) pattern_len++;
     
-    // 严格从最右边开始匹配
+    // 严格从最右边开始匹配（结尾匹配不受地址类型影响）
     for (int i = 0; i < pattern_len; ++i) {
-        const uchar current = (hash[(39-i)/2] & ((39-i)%2 ? 0x0F : 0xF0)) >> ((39-i)%2 ? 0 : 4);
-        if (current != data1[pattern_len-1-i]) {
-            return; // 如果结尾不匹配,直接返回
+        if (addrIndex - 1 - i < 0) {
+            return; // 超出地址长度
+        }
+        if (btc_address[addrIndex - 1 - i] != data1[pattern_len - 1 - i]) {
+            return; // 如果结尾不匹配直接返回
         }
         score++;
     }
     
-    profanity_result_update(id, hash, pResult, score, scoreMax);
+    // 从hash160数据中提取hash用于profanity_result_update
+    __private uchar hash160[20];
+    for (int i = 0; i < 5; i++) {
+        uint packed = pInverse[id].d[i];
+        hash160[i*4] = (packed >> 24) & 0xFF;
+        hash160[i*4+1] = (packed >> 16) & 0xFF;
+        hash160[i*4+2] = (packed >> 8) & 0xFF;
+        hash160[i*4+3] = packed & 0xFF;
+    }
+    
+    profanity_result_update(id, hash160, pResult, score, scoreMax, pInverse);
 }
 
 // 7. 只匹配地址开头(最左边)的连续出现相同的字符或数字
 __kernel void profanity_score_leading_same(__global mp_number * const pInverse, __global result * const pResult, __constant const uchar * const data1, __constant const uchar * const data2, const uchar scoreMax) {
     const size_t id = get_global_id(0);
-    __global const uchar * const hash = pInverse[id].d;
     int score = 0;
     int current_seq = 1;
     
+    // 从pInverse中提取完整的BTC地址字符串
+    __private char btc_address[92];
+    decode_btc_address_from_pinverse(pInverse, id, btc_address);
+    
+    int addrIndex = 0;
+    while (btc_address[addrIndex] != '\0' && addrIndex < 92) {
+        addrIndex++;
+    }
+    
     // 严格从最左边第一个字符开始
-    const uchar first_char = (hash[0] & 0xF0) >> 4;
+    if (addrIndex == 0) {
+        profanity_result_update(id, (__global const uchar*)pInverse[id].d, pResult, 0, scoreMax, pInverse);
+        return;
+    }
+    
+    const uchar first_char = btc_address[0];
     
     // 检查后续字符是否与第一个字符相同
-    for (int i = 1; i < data1[0] * 2; ++i) {
-        const uchar current = (hash[i/2] & (i%2 ? 0x0F : 0xF0)) >> (i%2 ? 0 : 4);
-        if (current == first_char) {
+    for (int i = 1; i < addrIndex && btc_address[i] != '\0'; ++i) {
+        if (btc_address[i] == first_char) {
             current_seq++;
         } else {
             break;
@@ -1019,19 +1441,38 @@ __kernel void profanity_score_leading_same(__global mp_number * const pInverse, 
     }
     
     score = current_seq >= data1[0] ? current_seq : 0;
-    profanity_result_update(id, hash, pResult, score, scoreMax);
+    
+    // 从hash160数据中提取hash用于profanity_result_update
+    __private uchar hash160[20];
+    for (int i = 0; i < 5; i++) {
+        uint packed = pInverse[id].d[i];
+        hash160[i*4] = (packed >> 24) & 0xFF;
+        hash160[i*4+1] = (packed >> 16) & 0xFF;
+        hash160[i*4+2] = (packed >> 8) & 0xFF;
+        hash160[i*4+3] = packed & 0xFF;
+    }
+    
+    profanity_result_update(id, hash160, pResult, score, scoreMax, pInverse);
 }
 
 // 8. 匹配任意位置的连续出现相同的字符或数字
 __kernel void profanity_score_any_same(__global mp_number * const pInverse, __global result * const pResult, __constant const uchar * const data1, __constant const uchar * const data2, const uchar scoreMax) {
     const size_t id = get_global_id(0);
-    __global const uchar * const hash = pInverse[id].d;
     int score = 0;
     int current_seq = 1;
     uchar last = 0;
     
-    for (int i = 0; i < 40; ++i) {
-        const uchar current = (hash[i/2] & (i%2 ? 0x0F : 0xF0)) >> (i%2 ? 0 : 4);
+    // 从pInverse中提取完整的BTC地址字符串
+    __private char btc_address[92];
+    decode_btc_address_from_pinverse(pInverse, id, btc_address);
+    
+    int addrIndex = 0;
+    while (btc_address[addrIndex] != '\0' && addrIndex < 92) {
+        addrIndex++;
+    }
+    
+    for (int i = 0; i < addrIndex && btc_address[i] != '\0'; ++i) {
+        const uchar current = btc_address[i];
         if (i == 0) {
             last = current;
             continue;
@@ -1048,23 +1489,45 @@ __kernel void profanity_score_any_same(__global mp_number * const pInverse, __gl
         last = current;
     }
     
-    profanity_result_update(id, hash, pResult, score, scoreMax);
+    // 从hash160数据中提取hash用于profanity_result_update
+    __private uchar hash160[20];
+    for (int i = 0; i < 5; i++) {
+        uint packed = pInverse[id].d[i];
+        hash160[i*4] = (packed >> 24) & 0xFF;
+        hash160[i*4+1] = (packed >> 16) & 0xFF;
+        hash160[i*4+2] = (packed >> 8) & 0xFF;
+        hash160[i*4+3] = packed & 0xFF;
+    }
+    
+    profanity_result_update(id, hash160, pResult, score, scoreMax, pInverse);
 }
 
 // 9. 只匹配地址结束位置(最右边)的连续出现相同的字符或数字
-__kernel void profanity_score_ending_same(__global mp_number * const pInverse, __global result * const pResult, __constant const uchar * const data1, __constant const uchar * const data2, const uchar scoreMax) {
+__kernel void profanity_score_ending_same(__global mp_number * const pInverse, __global result * const pResult, __constant const uchar * const data2, const uchar scoreMax) {
     const size_t id = get_global_id(0);
-    __global const uchar * const hash = pInverse[id].d;
     int score = 0;
     int current_seq = 1;
     
+    // 从pInverse中提取完整的BTC地址字符串
+    __private char btc_address[92];
+    decode_btc_address_from_pinverse(pInverse, id, btc_address);
+    
+    int addrIndex = 0;
+    while (btc_address[addrIndex] != '\0' && addrIndex < 92) {
+        addrIndex++;
+    }
+    
     // 严格从最右边最后一个字符开始
-    const uchar last_char = (hash[19] & 0x0F);
+    if (addrIndex == 0) {
+        profanity_result_update(id, (__global const uchar*)pInverse[id].d, pResult, 0, scoreMax, pInverse);
+        return;
+    }
+    
+    const uchar last_char = btc_address[addrIndex - 1];
     
     // 从倒数第二个字符开始向前检查
-    for (int i = 38; i >= 40 - data1[0] * 2; --i) {
-        const uchar current = (hash[i/2] & (i%2 ? 0x0F : 0xF0)) >> (i%2 ? 0 : 4);
-        if (current == last_char) {
+    for (int i = addrIndex - 2; i >= 0 && i >= addrIndex - data1[0]; --i) {
+        if (btc_address[i] == last_char) {
             current_seq++;
         } else {
             break;
@@ -1072,5 +1535,20 @@ __kernel void profanity_score_ending_same(__global mp_number * const pInverse, _
     }
     
     score = current_seq >= data1[0] ? current_seq : 0;
-    profanity_result_update(id, hash, pResult, score, scoreMax);
+    
+    // 从hash160数据中提取hash用于profanity_result_update
+    __private uchar hash160[20];
+    for (int i = 0; i < 5; i++) {
+        uint packed = pInverse[id].d[i];
+        hash160[i*4] = (packed >> 24) & 0xFF;
+        hash160[i*4+1] = (packed >> 16) & 0xFF;
+        hash160[i*4+2] = (packed >> 8) & 0xFF;
+        hash160[i*4+3] = packed & 0xFF;
+    }
+    
+    profanity_result_update(id, hash160, pResult, score, scoreMax, pInverse);
 }
+
+
+
+

@@ -26,5 +26,5 @@ kernal函数实际就是profanity.cl实现的函数
 2、clBuildProgram 创建cl内核程序
 3、Dispatcher.run 提交给gpu设备运行 
 4、GPU运行.cl的函数进行计算
-5、监听计算完成事件 接受计算结果
+5、监听计算完成事件 接收计算结果
 

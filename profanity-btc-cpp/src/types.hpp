@@ -27,6 +27,9 @@ typedef struct {
 	cl_uint found;
 	cl_uint foundId;
 	cl_uchar foundHash[20];
+	cl_uchar addressType;  // 添加地址类型信息
+	cl_uchar pubkeyX[32];  // 添加公钥X坐标信息
+	cl_char btcAddress[92]; // 添加完整的BTC地址字符串缓冲区
 } result;
 
 #endif /* HPP_TYPES */

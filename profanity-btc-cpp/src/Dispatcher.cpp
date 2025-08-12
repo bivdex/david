@@ -25,35 +25,6 @@ static std::string toHex(const uint8_t * const s, const size_t len) {
 	return r;
 }
 
-static void printResult(cl_ulong4 seed, cl_ulong round, result r, cl_uchar score, const std::chrono::time_point<std::chrono::steady_clock> & timeStart, const Mode & mode) {
-	// Time delta
-	const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(std::chrono::steady_clock::now() - timeStart).count();
-
-	// Format private key
-	cl_ulong carry = 0;
-	cl_ulong4 seedRes;
-
-	seedRes.s[0] = seed.s[0] + round; carry = seedRes.s[0] < round;
-	seedRes.s[1] = seed.s[1] + carry; carry = !seedRes.s[1];
-	seedRes.s[2] = seed.s[2] + carry; carry = !seedRes.s[2];
-	seedRes.s[3] = seed.s[3] + carry + r.foundId;
-
-	std::ostringstream ss;
-	ss << std::hex << std::setfill('0');
-	ss << std::setw(16) << seedRes.s[3] << std::setw(16) << seedRes.s[2] << std::setw(16) << seedRes.s[1] << std::setw(16) << seedRes.s[0];
-	const std::string strPrivate = ss.str();
-
-	// Format public key
-	const std::string strPublic = toHex(r.foundHash, 20);
-
-	// Print
-	const std::string strVT100ClearLine = "\33[2K\r";
-	std::cout << strVT100ClearLine << "  Time: " << std::setw(5) << seconds << "s Score: " << std::setw(2) << (int) score << " Private: 0x" << strPrivate << ' ';
-
-	std::cout << mode.transformName();
-	std::cout << ": 0x" << strPublic << std::endl;
-}
-
 unsigned int getKernelExecutionTimeMicros(cl_event & e) {
 	cl_ulong timeStart = 0, timeEnd = 0;
 	clWaitForEvents(1, &e);
@@ -411,7 +382,7 @@ void Dispatcher::handleResult(Device & d) {
             const std::string strPrivate = "0x" + ss.str();
 
             // 格式化地址
-            const std::string strPublic = "0x" + toHex(r.foundHash, 20);
+            const std::string strPublic = toHex(r.foundHash, 20);
 
             if (m_outputMode) {
                 // 在输出模式下，添加结果到列表

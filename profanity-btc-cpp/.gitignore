@@ -1,2 +1,4 @@
 *.exe
 speed.txt
+.idea
+.vscode

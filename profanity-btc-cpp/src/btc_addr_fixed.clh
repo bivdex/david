@@ -332,3 +332,4 @@ inline int validate_btc_address(const __global char *addr){
 }
 
 #endif /* BTC_ADDR_FIXED_CLH */
+

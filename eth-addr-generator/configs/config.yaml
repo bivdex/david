@@ -13,10 +13,6 @@ database:
 executor:
   program_path: "profanity.exe"  # 第三方程序路径
   args: [
-    "--matching", "input.txt",
-    "--output", "output.txt",
-    "--prefix-count", "3", # 前缀位数，可通过配置文件动态调整
-    "--suffix-count", "4", # 后缀位数，可通过配置文件动态调整
     "--quit-count", "1",
   ]                # 固定参数列表
   timeout: 300             # 执行超时时间（秒） 暂定5min

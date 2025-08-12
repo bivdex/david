@@ -46,49 +46,75 @@ func NewExecutor(config ExecutorConfig) *Executor {
 func (e *Executor) Execute(params map[string]interface{}) (*ExecutionResult, error) {
 	startTime := time.Now()
 
-	// 构建命令参数
+	// 构建命令参数，从配置文件中的固定参数开始
 	args := make([]string, len(e.config.Args))
 	copy(args, e.config.Args)
 
-	// 动态替换 --matching 和 --output 参数
+	// 动态处理 --matching 参数：如果params中有则修改，没有则append
 	if inputFile, hasInput := params["input_file"]; hasInput {
-		// 查找并替换 --matching 参数
+		// 查找是否已存在 --matching 参数
+		found := false
 		for i := 0; i < len(args)-1; i++ {
 			if args[i] == "--matching" {
 				args[i+1] = fmt.Sprintf("%v", inputFile)
+				found = true
 				break
 			}
 		}
+		// 如果没有找到，则append
+		if !found {
+			args = append(args, "--matching", fmt.Sprintf("%v", inputFile))
+		}
 	}
 
+	// 动态处理 --output 参数：如果params中有则修改，没有则append
 	if outputFile, hasOutput := params["output_file"]; hasOutput {
-		// 查找并替换 --output 参数
+		// 查找是否已存在 --output 参数
+		found := false
 		for i := 0; i < len(args)-1; i++ {
 			if args[i] == "--output" {
 				args[i+1] = fmt.Sprintf("%v", outputFile)
+				found = true
 				break
 			}
 		}
+		// 如果没有找到，则append
+		if !found {
+			args = append(args, "--output", fmt.Sprintf("%v", outputFile))
+		}
 	}
 
-	// 动态替换 --prefix-count 和 --suffix-count 参数
+	// 动态处理 --prefix-count 参数：如果params中有则修改，没有则append
 	if prefixCount, hasPrefixCount := params["prefix_count"]; hasPrefixCount {
-		// 查找并替换 --prefix-count 参数
+		// 查找是否已存在 --prefix-count 参数
+		found := false
 		for i := 0; i < len(args)-1; i++ {
 			if args[i] == "--prefix-count" {
 				args[i+1] = fmt.Sprintf("%v", prefixCount)
+				found = true
 				break
 			}
 		}
+		// 如果没有找到，则append
+		if !found {
+			args = append(args, "--prefix-count", fmt.Sprintf("%v", prefixCount))
+		}
 	}
 
+	// 动态处理 --suffix-count 参数：如果params中有则修改，没有则append
 	if suffixCount, hasSuffixCount := params["suffix_count"]; hasSuffixCount {
-		// 查找并替换 --suffix-count 参数
+		// 查找是否已存在 --suffix-count 参数
+		found := false
 		for i := 0; i < len(args)-1; i++ {
 			if args[i] == "--suffix-count" {
 				args[i+1] = fmt.Sprintf("%v", suffixCount)
+				found = true
 				break
 			}
+		}
+		// 如果没有找到，则append
+		if !found {
+			args = append(args, "--suffix-count", fmt.Sprintf("%v", suffixCount))
 		}
 	}
 
